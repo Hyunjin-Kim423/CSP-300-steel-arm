@@ -27,7 +27,7 @@ public class CameraImagePublisher : MonoBehaviour
     ROSConnection ros;
     public string topicName = "camera/rgb/image_raw";
     public float publishRateHz = 10f;
-    public int downsampleFactor = 4;
+    public int downsampleFactor = 2;
     float timer;
     bool readbackPending;
 

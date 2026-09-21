@@ -768,6 +768,7 @@ MonoBehaviour:
   cameraAccess: {fileID: 529913395}
   topicName: camera/rgb/image_raw
   publishRateHz: 10
+  downsampleFactor: 2
 --- !u!114 &529913396
 MonoBehaviour:
   m_ObjectHideFlags: 0
