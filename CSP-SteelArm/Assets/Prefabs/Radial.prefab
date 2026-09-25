@@ -1119,8 +1119,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8c06eccea6fc1594eb15802fe4dc22c0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TestUI
-  radius: 0.3
-  orbitSpeed: 1
 --- !u!1 &3039822116465252743
 GameObject:
   m_ObjectHideFlags: 0
