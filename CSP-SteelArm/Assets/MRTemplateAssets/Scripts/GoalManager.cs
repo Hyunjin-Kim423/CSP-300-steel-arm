@@ -349,6 +349,26 @@ namespace UnityEngine.XR.Templates.MR
             StartCoroutine(TurnOnARFeatures());
         }
 
+        public void CloseTooltipOnly()
+        {
+            m_CoachingUIParent.transform.localScale = Vector3.zero;
+
+            if (m_FeatureController != null)
+                m_FeatureController.TogglePassthrough(true);
+
+            if (m_LearnButton != null)
+            {
+                m_LearnButton.SetActive(false);
+            }
+
+            if (m_LearnModal != null)
+            {
+                m_LearnModal.transform.localScale = Vector3.zero;
+            }
+
+            StartCoroutine(TurnOnARFeatures());
+        }
+
         public void ResetCoaching()
         {
             TurnOffARFeatureVisualization();
