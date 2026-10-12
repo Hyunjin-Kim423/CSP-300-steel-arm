@@ -133,7 +133,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             {
                 pointed = box;
                 nearest = distance;
-                MRUIGenerator._instance.GenerateUI(ray, distance, pointed.text);   
+                ObjectMenuGenerator._instance.GenerateUI(ray, distance, pointed.text);   
             }
         }
 

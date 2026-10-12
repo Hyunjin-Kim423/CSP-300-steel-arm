@@ -945,7 +945,7 @@ Transform:
   m_GameObject: {fileID: 498468173}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.108000055, y: 1.159, z: 1.061}
+  m_LocalPosition: {x: 0.108000055, y: 1.585, z: 1.061}
   m_LocalScale: {x: 0.15, y: 0.15, z: 0.15}
   m_ConstrainProportionsScale: 1
   m_Children: []
@@ -1677,7 +1677,7 @@ Transform:
   m_GameObject: {fileID: 967775553}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.07, y: 1.159, z: 1.066}
+  m_LocalPosition: {x: -0.07, y: 1.585, z: 1.066}
   m_LocalScale: {x: 0.1, y: 0.1, z: 0.1}
   m_ConstrainProportionsScale: 1
   m_Children: []
@@ -2900,7 +2900,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e2072e809b54f734693c0fab5adffdaa, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MRUIGenerator
-  _uiPrefab: {fileID: 2825503766651779080, guid: ec3c1f22d33ea7043b86045336a9cf68, type: 3}
+  _uiPrefab: {fileID: 5949112744642007222, guid: 958fe89f04d33334fa3a73ce00b2e69d, type: 3}
+  maxSpawnedUI: 2
   maxDistance: 1
 --- !u!1001 &1766750150
 PrefabInstance:
