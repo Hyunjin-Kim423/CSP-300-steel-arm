@@ -36,7 +36,7 @@ public class ObjectMenuGenerator : MonoBehaviour
     {
     }
 
-    public void GenerateUI(Ray ray, float distance, string targetName) // change to object data
+    public void GenerateUI(Ray ray, float distance, RosMessageTypes.Yolo.DetectionMsg jsonData) // change to object data
     {
         if (_uiPrefab != null)
         {
@@ -49,10 +49,10 @@ public class ObjectMenuGenerator : MonoBehaviour
             Vector3 _position = ray.GetPoint(dist);
             _currentUI = Instantiate(_uiPrefab, transform);
             _currentUI.transform.position = _position;
-            _currentUI.GetComponent<ObjectMenu>().fixedPosition = _position + Vector3.up * 0.15f;
             _currentUI.transform.localScale = Vector3.one * Mathf.Lerp(currentScale / 2.5f, currentScale * 1.5f, dist / maxDistance);
 
-            _currentUI.GetComponent<ObjectMenu>().Open(targetName);
+            _currentUI.GetComponent<ObjectMenu>().fixedPosition = _position + Vector3.up * 0.15f;
+            _currentUI.GetComponent<ObjectMenu>().Open(jsonData);
         }
     }
 }

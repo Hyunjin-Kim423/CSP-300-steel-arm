@@ -45,11 +45,11 @@ public class ObjectMenu : MonoBehaviour
         }
     }
 
-    public void Open(string name) // send data through parameter
+    public void Open(RosMessageTypes.Yolo.DetectionMsg data) // send data through parameter
     {
         // bind here
-        // _menuCount = _someData.Count; // get data count from SO or struct
-        _objectNameText.text = name; // get data name from SO or struct
+        var jsonData = RobotActionRegistry.GetActions(data.class_name);
+        _menuCount = jsonData != null ? jsonData.Length + 1 : 3;
         // ===
 
         float angleStep = 360f / _menuCount;
@@ -66,6 +66,15 @@ public class ObjectMenu : MonoBehaviour
 
             // UI 생성 및 부모 설정
             GameObject spawnedObj = Instantiate(_menuPrefab, transform);
+
+            if (i > 0 || jsonData != null)
+            {
+                string methodName = jsonData[i - 1];
+                spawnedObj.GetComponentInChildren<TMPro.TextMeshProUGUI>().text = methodName;
+                spawnedObj.GetComponent<UnityEngine.UI.Button>().onClick.AddListener(() => 
+                    RobotActionRegistry.ExecuteAction(methodName));
+            }
+
             RectTransform rectTransform = spawnedObj.GetComponent<RectTransform>();
 
             // UI 앵커 및 피벗을 중앙(0.5, 0.5)으로 정렬

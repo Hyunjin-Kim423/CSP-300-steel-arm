@@ -1,0 +1,53 @@
+{
+    "__comment__": 
+    [
+        "This file contains a list of objects and their corresponding actions for the YOLO detection system.",
+        "The method name has to be same with the action name in the RobotActionRegistry.cs file."
+    ],
+    "objects": [
+        {
+            "name": "person",
+            "action": 
+            [
+                "Point",
+                "Handshake",
+                "Wave"
+            ]
+        },
+        {
+            "name": "cup",
+            "action": 
+            [
+                "Point",
+                "Grab",
+                "Pull"
+            ]
+        },
+        {
+            "name": "mouse",
+            "action": 
+            [
+                "Point",
+                "Grab",
+                "Click"
+            ]
+        },
+        {
+            "name": "chair",
+            "action": 
+            [
+                "Push",
+                "Grab"
+            ]
+        },
+        {
+            "name": "book",
+            "action": 
+            [
+                "Point",
+                "Grab",
+                "Pull"
+            ]
+        }
+    ]
+}

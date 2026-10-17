@@ -18,6 +18,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         public string text;
         public float depth;
         public Vector3 cameraPosition;
+        public DetectionMsg detectionMsg;
     }
 
     class Controller
@@ -66,6 +67,16 @@ public class YoloBoxVisualizer : MonoBehaviour
     float lastDetectionTime;
     float labelHideTime;
 
+    public static YoloBoxVisualizer Instance { get; private set; }
+
+    void Awake()
+    {
+        if (Instance == null)
+            Instance = this;
+        else
+            Destroy(this);
+    }
+
     void Start()
     {
         publisher = GetComponent<CameraImagePublisher>();
@@ -91,6 +102,10 @@ public class YoloBoxVisualizer : MonoBehaviour
                 environmentRaycast = gameObject.AddComponent<EnvironmentRaycastManager>();
         }
 
+    }
+
+    public void Setup()
+    {
         ROSConnection.GetOrCreateInstance().Subscribe<DetectionArrayMsg>(topicName, OnDetections);
     }
 
@@ -133,7 +148,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             {
                 pointed = box;
                 nearest = distance;
-                ObjectMenuGenerator._instance.GenerateUI(ray, distance, pointed.text);   
+                ObjectMenuGenerator._instance.GenerateUI(ray, distance, pointed.detectionMsg);   
             }
         }
 
@@ -196,6 +211,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             box.text = $"{det.class_name} {det.score:0.00}";
             box.depth = depth;
             box.cameraPosition = pose.position;
+            box.detectionMsg = det;
         }
 
         HideBoxesFrom(count);
