@@ -313,6 +313,28 @@ MonoBehaviour:
   targetOpenXRApiVersion: 1.1.45
   required: 0
   customRuntimeLoaderName: 
+--- !u!114 &-8173811727401378553
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 12d3bf61b014a48a2b7564c61da9d7ad, type: 3}
+  m_Name: AndroidXRPerformanceMetrics Standalone
+  m_EditorClassIdentifier: Unity.XR.AndroidOpenXR::UnityEngine.XR.OpenXR.Features.Android.AndroidXRPerformanceMetrics
+  m_enabled: 0
+  nameUi: Android XR Performance Metrics
+  version: 0.1.0
+  featureIdInternal: com.unity.openxr.feature.androidxr-performance-metrics
+  openxrExtensionStrings: XR_ANDROID_performance_metrics
+  company: Unity Technologies
+  priority: 0
+  targetOpenXRApiVersion: 
+  required: 0
+  customRuntimeLoaderName: 
 --- !u!114 &-8169811520713400255
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1271,8 +1293,8 @@ MonoBehaviour:
   - {fileID: 8127291601776993140}
   - {fileID: -1835866604154244162}
   - {fileID: 8138307427169125435}
-  - {fileID: 3410902767547993937}
-  - {fileID: 2891809881504172383}
+  - {fileID: 4640904571342076805}
+  - {fileID: 7805809881969528321}
   - {fileID: 3298164568213380209}
   - {fileID: -7382343682382298959}
   - {fileID: 7746354425518333801}
@@ -1283,7 +1305,7 @@ MonoBehaviour:
   - {fileID: 1923348927079076266}
   - {fileID: 1330991386968781117}
   - {fileID: -2436165983393813540}
-  - {fileID: 1029646330681860945}
+  - {fileID: 7342924802477546079}
   - {fileID: 6730465793224889687}
   - {fileID: -905532785698061016}
   - {fileID: -8695955201372404009}

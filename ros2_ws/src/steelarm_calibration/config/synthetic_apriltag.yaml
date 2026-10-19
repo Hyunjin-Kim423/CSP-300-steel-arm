@@ -1,0 +1,11 @@
+# TEST ONLY. Never load this with live Quest or physical calibration.
+tag_family: 36h11
+tag_id: 0
+tag_frame: robot_tag_0
+tag_size_m: 0.100
+image_width: 640
+image_height: 480
+fx: 600.0
+fy: 600.0
+cx: 320.0
+cy: 240.0

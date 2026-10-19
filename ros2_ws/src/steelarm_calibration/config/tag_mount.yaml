@@ -1,0 +1,8 @@
+# T_robot_tag_base maps robot_base coordinates into robot_tag_0 coordinates.
+# TODO(physical): measure origin and axes after rigidly mounting tag 0; do not use placeholders.
+/**:
+  ros__parameters:
+    parent_frame: robot_tag_0
+    child_frame: robot_base
+    translation_m: []
+    rotation_xyzw: []

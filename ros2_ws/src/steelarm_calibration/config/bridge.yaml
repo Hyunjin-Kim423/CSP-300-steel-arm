@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    image_topic: /quest/camera/image_raw
+    camera_info_topic: /quest/camera/camera_info
+    pose_topic: /quest/camera/pose
+    world_frame: quest_world
+    camera_frame: quest_camera_optical
+    publish_rate_hz: 12.0
+    max_observation_age_s: 0.5

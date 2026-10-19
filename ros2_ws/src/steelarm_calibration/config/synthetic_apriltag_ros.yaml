@@ -1,0 +1,13 @@
+# Verified Jazzy apriltag_ros 3.4.0 schema; TEST ONLY, never used by live launch.
+/**:
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    size: 0.100
+    max_hamming: 0
+    qos_profile: sensor_data
+    pose_estimation_method: pnp
+    tag:
+      ids: [0]
+      frames: [robot_tag_0_synthetic]
+      sizes: [0.100]

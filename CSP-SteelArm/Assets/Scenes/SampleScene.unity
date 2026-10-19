@@ -1037,7 +1037,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraImagePublisher
   cameraAccess: {fileID: 529913395}
-  topicName: /camera/rgb/image_raw
+  topicName: /quest/camera/image_raw
   publishRateHz: 10
   downsampleFactor: 2
 --- !u!114 &529913395 stripped

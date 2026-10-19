@@ -1,0 +1,14 @@
+# Verified against locally installed ROS 2 Jazzy apriltag_ros 3.4.0.
+# Live use still requires a rectified image with matching CameraInfo.
+/**:
+  ros__parameters:
+    family: 36h11
+    max_hamming: 0
+    image_transport: raw
+    # Confirmed black-code detector edge (corner-to-corner), in metres.
+    size: 0.08
+    pose_estimation_method: pnp
+    tag:
+      ids: [0]
+      frames: [robot_tag_0]
+      sizes: [0.08]
