@@ -1,0 +1,13 @@
+# TEST ONLY: no robot-base transform is published from this configuration.
+# Size is the confirmed black-code detector edge for tag36h11 ID 0.
+/**:
+  ros__parameters:
+    family: 36h11
+    max_hamming: 0
+    image_transport: raw
+    size: 0.08
+    pose_estimation_method: pnp
+    tag:
+      ids: [0]
+      frames: [webcam_tag_0_test]
+      sizes: [0.08]

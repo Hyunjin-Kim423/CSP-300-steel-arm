@@ -119,3 +119,21 @@ Jazzy computer install `apriltag_ros`, inspect its actual executable and
 parameters, then replace the candidate YAML/remaps with that verified contract
 and a measured non-zero tag size. This prevents an unverified package variant
 or synthetic size from entering a live TF tree.
+# USB webcam test (not production calibration)
+
+Attach the webcam to WSL, find its V4L2 path with `ls -l /dev/video*`, then run:
+
+```bash
+ros2 launch steelarm_calibration webcam_test.launch.py device:=/dev/video0 fourcc:=MJPG
+```
+
+This publishes `/test/webcam/image_raw`, `/test/webcam/camera_info`, and
+`/test/webcam/detections`, plus the detection TF
+`webcam_optical_test -> webcam_tag_0_test`.  It uses an explicitly
+**provisional 70-degree horizontal FOV** only so the detection pipeline can be
+exercised.  The detected metric pose is not valid until the Office G1080 is
+calibrated with a checkerboard and its real intrinsics replace that estimate.
+
+The webcam test never fills `tag_mount.yaml` and never publishes
+`robot_base`; only a measured, rigid tag-to-base transformation can do that.
+
