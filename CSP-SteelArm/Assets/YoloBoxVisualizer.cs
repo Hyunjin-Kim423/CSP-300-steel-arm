@@ -102,13 +102,9 @@ public class YoloBoxVisualizer : MonoBehaviour
                 environmentRaycast = gameObject.AddComponent<EnvironmentRaycastManager>();
         }
 
-    }
-
-    public void Setup()
-    {
         ROSConnection.GetOrCreateInstance().Subscribe<DetectionArrayMsg>(topicName, OnDetections);
     }
-
+    
     void OnDestroy()
     {
         foreach (var controller in controllers)
@@ -148,7 +144,6 @@ public class YoloBoxVisualizer : MonoBehaviour
             {
                 pointed = box;
                 nearest = distance;
-                ObjectMenuGenerator._instance.GenerateUI(ray, distance, pointed.detectionMsg);   
             }
         }
 
@@ -157,6 +152,9 @@ public class YoloBoxVisualizer : MonoBehaviour
             label.gameObject.SetActive(false);
             return;
         }
+
+        // 가장 가까운 박스가 확정된 뒤 한 번만 메뉴 생성
+        ObjectMenuGenerator._instance.GenerateUI(ray, nearest, pointed.detectionMsg);
 
         Vector3 topLeft = pointed.corners[1];
         label.text = pointed.text;
@@ -180,6 +178,7 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void OnDetections(DetectionArrayMsg msg)
     {
+        // Debug.Log("[steelarm] On Yolo detection");
         var cameraAccess = publisher.CameraAccess;
         if (!cameraAccess.IsPlaying) return;
         if (!publisher.TryGetFrame(msg.header.stamp, out var frame)) return;

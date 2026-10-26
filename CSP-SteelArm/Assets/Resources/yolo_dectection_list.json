@@ -7,7 +7,7 @@
     "objects": [
         {
             "name": "person",
-            "action": 
+            "actions": 
             [
                 "Point",
                 "Handshake",
@@ -16,7 +16,7 @@
         },
         {
             "name": "cup",
-            "action": 
+            "actions": 
             [
                 "Point",
                 "Grab",
@@ -25,7 +25,7 @@
         },
         {
             "name": "mouse",
-            "action": 
+            "actions": 
             [
                 "Point",
                 "Grab",
@@ -34,7 +34,7 @@
         },
         {
             "name": "chair",
-            "action": 
+            "actions": 
             [
                 "Push",
                 "Grab"
@@ -42,7 +42,7 @@
         },
         {
             "name": "book",
-            "action": 
+            "actions": 
             [
                 "Point",
                 "Grab",

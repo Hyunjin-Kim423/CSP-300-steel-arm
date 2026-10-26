@@ -23,6 +23,9 @@ public class ObjectMenu : MonoBehaviour
     public float staggerDelay = 0.05f;
 
     List<RectTransform> spawnedUIList = new List<RectTransform>();
+    bool isClosing;
+
+    public bool IsClosing => isClosing;
 
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
@@ -50,6 +53,7 @@ public class ObjectMenu : MonoBehaviour
         // bind here
         var jsonData = RobotActionRegistry.GetActions(data.class_name);
         _menuCount = jsonData != null ? jsonData.Length + 1 : 3;
+        _objectNameText.text = data.class_name;
         // ===
 
         float angleStep = 360f / _menuCount;
@@ -67,7 +71,7 @@ public class ObjectMenu : MonoBehaviour
             // UI 생성 및 부모 설정
             GameObject spawnedObj = Instantiate(_menuPrefab, transform);
 
-            if (i > 0 || jsonData != null)
+            if (i > 0 && jsonData != null)
             {
                 string methodName = jsonData[i - 1];
                 spawnedObj.GetComponentInChildren<TMPro.TextMeshProUGUI>().text = methodName;
@@ -92,7 +96,55 @@ public class ObjectMenu : MonoBehaviour
 
         Transform first = spawnedUIList[0];
         first.GetComponentInChildren<TMPro.TextMeshProUGUI>().text = "Close"; 
-        first.GetComponent<UnityEngine.UI.Button>().onClick.AddListener(() => AnimateCloseAll());
+        first.GetComponent<UnityEngine.UI.Button>().onClick.AddListener(Close);
+    }
+
+    // 메뉴 전체 닫기: 버튼들이 차례로 들어간 뒤 패널(배경 + 이름)까지 줄어들고, 끝나면 메뉴 오브젝트 자체를 Destroy
+    // 이미 닫히는 중이면 무시하므로 여러 번 호출해도 안전
+    public void Close()
+    {
+        if (isClosing) return;
+        isClosing = true;
+
+        // 아직 진행 중인 펼침 애니메이션이 닫힘 애니메이션과 같은 값을 덮어쓰지 않도록 중단
+        StopAllCoroutines();
+        StartCoroutine(CloseRoutine());
+    }
+
+    private IEnumerator CloseRoutine()
+    {
+        // 닫히는 동안 버튼이 다시 눌리지 않도록 리스너 제거
+        foreach (RectTransform rect in spawnedUIList)
+        {
+            if (rect != null && rect.TryGetComponent(out UnityEngine.UI.Button button))
+                button.onClick.RemoveAllListeners();
+        }
+
+        // 버튼: 마지막 버튼부터 staggerDelay 간격으로 안쪽으로 접힘
+        int count = spawnedUIList.Count;
+        for (int i = count - 1; i >= 0; i--)
+        {
+            if (spawnedUIList[i] != null)
+                StartCoroutine(AnimateCloseSingle(spawnedUIList[i], (count - 1 - i) * staggerDelay));
+        }
+
+        // 패널: 마지막 버튼이 접히기 시작할 때 함께 줄어들기 시작
+        float panelDelay = Mathf.Max(0, count - 1) * staggerDelay;
+        if (panelDelay > 0)
+            yield return new WaitForSeconds(panelDelay);
+
+        Vector3 startScale = transform.localScale;
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            transform.localScale = Vector3.LerpUnclamped(startScale, Vector3.zero, EaseInBack(t));
+            yield return null;
+        }
+
+        // 버튼은 자식이므로 메뉴와 함께 제거됨
+        Destroy(gameObject);
     }
 
     private IEnumerator AnimateUISpawn(RectTransform targetRect, Vector2 targetPos, float delay)
@@ -122,17 +174,8 @@ public class ObjectMenu : MonoBehaviour
         targetRect.anchoredPosition = targetPos;
     }
 
-    // 전체 닫기 애니메이션 관리 (모든 요소의 애니메이션이 끝날 때까지 대기 후 Destroy)
-    public void AnimateCloseAll()
-    {
-        for (int i = spawnedUIList.Count - 1; i >= 0; i--)
-        {
-            RectTransform targetRect = spawnedUIList[i];
-            StartCoroutine(AnimateCloseSingle(targetRect, (spawnedUIList.Count - 1 - i) * staggerDelay, () => spawnedUIList.RemoveAt(i)));
-        }
-    }
-
-    private IEnumerator AnimateCloseSingle(RectTransform targetRect, float delay, System.Action onComplete)
+    // 버튼 하나를 중앙으로 접어 넣는 애니메이션 (제거는 CloseRoutine에서 메뉴 전체와 함께 처리)
+    private IEnumerator AnimateCloseSingle(RectTransform targetRect, float delay)
     {
         if (delay > 0) 
             yield return new WaitForSeconds(delay);
@@ -154,10 +197,6 @@ public class ObjectMenu : MonoBehaviour
 
             yield return null;
         }
-
-        Destroy(targetRect.gameObject);
-        // 완료 콜백 실행
-        onComplete?.Invoke();
     }
 
     // Ease Out Back 수학 함수

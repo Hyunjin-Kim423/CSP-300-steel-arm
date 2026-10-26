@@ -36,6 +36,18 @@ public class CameraImagePublisher : MonoBehaviour
 
     public Meta.XR.PassthroughCameraAccess CameraAccess => cameraAccess;
 
+    void Awake()
+    {
+        // PassthroughCameraAccess never requests the camera permission itself; it just waits for it.
+        // Request it here (Awake runs before every Start) so a fresh install still gets the prompt.
+        // Scene is requested in the same dialog because Android drops a second request made while one is pending.
+        OVRPermissionsRequester.Request(new[]
+        {
+            OVRPermissionsRequester.Permission.PassthroughCameraAccess,
+            OVRPermissionsRequester.Permission.Scene
+        });
+    }
+
     void Start()
     {
         ros = ROSConnection.GetOrCreateInstance();
@@ -62,6 +74,7 @@ public class CameraImagePublisher : MonoBehaviour
 
     void Publish(NativeArray<Color32> pixels, int srcWidth, int srcHeight, long ticks, Pose cameraPose)
     {
+        // Debug.Log("[steelarm] Cam Image publishing");
         int dstWidth = srcWidth / downsampleFactor;
         int dstHeight = srcHeight / downsampleFactor;
         byte[] data = new byte[dstWidth * dstHeight * 3];

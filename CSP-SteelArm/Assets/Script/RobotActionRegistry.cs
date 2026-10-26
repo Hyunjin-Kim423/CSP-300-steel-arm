@@ -7,7 +7,7 @@ public static class RobotActionRegistry
     [System.Serializable]
     public class ActionData
     {
-        public string objectName;
+        public string name;
         public string[] actions;
     }
 
@@ -29,9 +29,9 @@ public static class RobotActionRegistry
         actionMap.Clear();
         foreach (var obj in database.objects)
         {
-            if (!actionMap.ContainsKey(obj.objectName))
+            if (!actionMap.ContainsKey(obj.name))
             {
-                actionMap.Add(obj.objectName, obj.actions);
+                actionMap.Add(obj.name, obj.actions);
             }
         }
     }
@@ -41,7 +41,7 @@ public static class RobotActionRegistry
         MethodInfo method = typeof(RobotActionRegistry).GetMethod(methodName);
         if (method == null)
         {
-            UnityEngine.Debug.LogError($"Method '{methodName}' not found in RobotActionRegistry.");
+            Debug.LogError($"Method '{methodName}' not found in RobotActionRegistry.");
             return;
         }
 
@@ -69,4 +69,16 @@ public static class RobotActionRegistry
     {
         
     }
+
+    public static void Grab()
+    {
+        
+    }
+     
+    public static void Click()
+    {
+        
+    }
+
+    public static void Pull() {}
 }

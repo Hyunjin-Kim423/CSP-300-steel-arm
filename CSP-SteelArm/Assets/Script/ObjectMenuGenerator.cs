@@ -36,13 +36,14 @@ public class ObjectMenuGenerator : MonoBehaviour
     {
     }
 
-    public void GenerateUI(Ray ray, float distance, RosMessageTypes.Yolo.DetectionMsg jsonData) // change to object data
+    public void GenerateUI(Ray ray, float distance, RosMessageTypes.Yolo.DetectionMsg data) // change to object data
     {
         if (_uiPrefab != null)
         {
             if (_currentUI != null)
             {
-                Destroy(_currentUI);
+                // 기존 메뉴는 닫힘 애니메이션을 재생한 뒤 스스로 Destroy됨
+                _currentUI.GetComponent<ObjectMenu>().Close();
             }
 
             float dist = Mathf.Min(distance, maxDistance);
@@ -52,7 +53,7 @@ public class ObjectMenuGenerator : MonoBehaviour
             _currentUI.transform.localScale = Vector3.one * Mathf.Lerp(currentScale / 2.5f, currentScale * 1.5f, dist / maxDistance);
 
             _currentUI.GetComponent<ObjectMenu>().fixedPosition = _position + Vector3.up * 0.15f;
-            _currentUI.GetComponent<ObjectMenu>().Open(jsonData);
+            _currentUI.GetComponent<ObjectMenu>().Open(data);
         }
     }
 }
