@@ -1064,9 +1064,20 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::YoloBoxVisualizer
   topicName: /yolo/detections
+  useTracking: 0
+  trackingTopicName: /yolo/tracking
+  trackingFallbackTimeout: 1.5
+  followSpeed: 8
+  depthSmoothing: 0.35
+  lostTrackTimeout: 1.5
   fallbackDistance: 1
   lineWidth: 0.004
+  highlightStyle: 1
+  outlineColor: {r: 1, g: 1, b: 1, a: 1}
   boxColor: {r: 0, g: 1, b: 0, a: 1}
+  unregisteredColor: {r: 1, g: 0, b: 0, a: 1}
+  fillAlpha: 0.1
+  maxMaskPoints: 40
   labelHeight: 0.03
   labelDuration: 3
   boxLifetime: 2
@@ -2424,7 +2435,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 3032334164164963440, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[1].m_MethodName
-      value: Setup
+      value: SubscribeROS
       objectReference: {fileID: 0}
     - target: {fileID: 3032334164164963440, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_TargetAssemblyTypeName
