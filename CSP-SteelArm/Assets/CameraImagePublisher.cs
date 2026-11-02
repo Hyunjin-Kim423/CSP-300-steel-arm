@@ -26,10 +26,14 @@ public class CameraImagePublisher : MonoBehaviour
     [SerializeField] Meta.XR.PassthroughCameraAccess cameraAccess;
     ROSConnection ros;
     public string topicName = "camera/rgb/image_raw";
+    [Tooltip("Publish camera frames continuously at publishRateHz. When off, a frame is only sent when RequestScan() is called.")]
+    public bool continuousPublish = true;
     public float publishRateHz = 10f;
     public int downsampleFactor = 2;
     float timer;
     bool readbackPending;
+    int pendingScanFrames;
+    long lastScanTicks = -1;
 
     readonly Dictionary<long, FrameInfo> recentFrames = new Dictionary<long, FrameInfo>();
     readonly Queue<long> recentFrameOrder = new Queue<long>();
@@ -54,12 +58,32 @@ public class CameraImagePublisher : MonoBehaviour
         ros.RegisterPublisher<ImageMsg>(topicName);
     }
 
+    // Sends the next camera frame as a scan frame. Returns false when the camera is not running yet.
+    public bool RequestScan()
+    {
+        if (!cameraAccess.IsPlaying)
+            return false;
+        pendingScanFrames = 1;
+        return true;
+    }
+
+    // True when the stamp belongs to the most recent scan frame.
+    public bool IsScanFrame(TimeMsg stamp, out long ticks)
+    {
+        ticks = ToTicks(stamp);
+        return ticks == lastScanTicks;
+    }
+
+    static long ToTicks(TimeMsg stamp) => stamp.sec * TimeSpan.TicksPerSecond + stamp.nanosec / 100;
+
     void Update()
     {
         timer += Time.deltaTime;
-        if (timer < 1f / publishRateHz || readbackPending) return;
-        if (!cameraAccess.IsPlaying) return;
+        if (readbackPending || !cameraAccess.IsPlaying) return;
+        bool scan = pendingScanFrames > 0;
+        if (!scan && (!continuousPublish || timer < 1f / publishRateHz)) return;
         timer = 0f;
+        if (scan) pendingScanFrames--;
 
         Pose cameraPose = cameraAccess.GetCameraPose();
         long ticks = (cameraAccess.Timestamp - k_UnixEpoch).Ticks;
@@ -67,7 +91,12 @@ public class CameraImagePublisher : MonoBehaviour
         AsyncGPUReadback.Request(cameraAccess.GetTexture(), 0, request =>
         {
             readbackPending = false;
-            if (request.hasError) return;
+            if (request.hasError)
+            {
+                if (scan) pendingScanFrames++; // retry the scan with the next frame
+                return;
+            }
+            if (scan) lastScanTicks = ticks;
             Publish(request.GetData<Color32>(), request.width, request.height, ticks, cameraPose);
         });
     }
@@ -112,8 +141,7 @@ public class CameraImagePublisher : MonoBehaviour
 
     public bool TryGetFrame(TimeMsg stamp, out FrameInfo frame)
     {
-        long ticks = stamp.sec * TimeSpan.TicksPerSecond + stamp.nanosec / 100;
-        return recentFrames.TryGetValue(ticks, out frame);
+        return recentFrames.TryGetValue(ToTicks(stamp), out frame);
     }
 
     void RememberFrame(long ticks, FrameInfo frame)

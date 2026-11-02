@@ -1038,6 +1038,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CameraImagePublisher
   cameraAccess: {fileID: 529913395}
   topicName: /camera/rgb/image_raw
+  continuousPublish: 1
   publishRateHz: 10
   downsampleFactor: 2
 --- !u!114 &529913395 stripped
@@ -1063,11 +1064,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: af1f6ee779ce4279ad1513e0d3b42dd8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::YoloBoxVisualizer
+  scanOnButton: 1
+  replaceOnlyInView: 1
   topicName: /yolo/detections
   useTracking: 0
   trackingTopicName: /yolo/tracking
   trackingFallbackTimeout: 1.5
-  followSpeed: 8
+  followSpeed: 10
   depthSmoothing: 0.35
   lostTrackTimeout: 1.5
   fallbackDistance: 1
@@ -2891,6 +2894,55 @@ GameObject:
   m_CorrespondingSourceObject: {fileID: 9176281889616400641, guid: 66d40221d132d04499855da9ce315f20, type: 3}
   m_PrefabInstance: {fileID: 1364055689}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &1652390493
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1652390495}
+  - component: {fileID: 1652390494}
+  m_Layer: 0
+  m_Name: StartWithControllerButton
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1652390494
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1652390493}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d25f01e74ff63284196b4815744685a5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::StartWithControllerButton
+  bindings:
+  - <XRController>{RightHand}/{SecondaryButton}
+  - <XRController>{LeftHand}/{SecondaryButton}
+  startHint: Press B or Y
+  keepStartButton: 0
+--- !u!4 &1652390495
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1652390493}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: -0.32345, y: 0, z: 1.76482}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1722322172
 GameObject:
   m_ObjectHideFlags: 0
@@ -2935,8 +2987,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e2072e809b54f734693c0fab5adffdaa, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MRUIGenerator
-  _uiPrefab: {fileID: 5949112744642007222, guid: 958fe89f04d33334fa3a73ce00b2e69d, type: 3}
-  maxDistance: 1
+  _uiPrefab: {fileID: 5061615300026727706, guid: 66088d4a24277f84d95458ea6dec8bf2, type: 3}
 --- !u!1001 &1766750150
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -4791,3 +4842,4 @@ SceneRoots:
   - {fileID: 967775559}
   - {fileID: 498468179}
   - {fileID: 1830833707}
+  - {fileID: 1652390495}
