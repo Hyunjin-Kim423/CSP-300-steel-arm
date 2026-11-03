@@ -39,6 +39,7 @@ public class DetectedObject
     public readonly Vector3[] corners = new Vector3[4];         // drawn bounding box (follows targetCorners)
 
     // How it is drawn
+    public float flashStart = -1f;                               // outline flash start time (< 0: not flashing)
     public bool hasMask;                                         // outline from the mask (false = bounding box)
     public readonly List<Part> parts = new List<Part>();         // pooled; only the first partCount are in use
     public int partCount;
@@ -103,6 +104,32 @@ public class DetectedObject
     }
 
     // ---------- outline ----------
+
+    // Short highlight when the object first appears: the outline turns flashColor and gets thicker, then settles back.
+    public void UpdateFlash(float now, float duration, Color flashColor, Color normalColor, float normalWidth)
+    {
+        if (flashStart < 0f)
+            return;
+        float t = (now - flashStart) / Mathf.Max(0.01f, duration);
+        if (t >= 1f)
+        {
+            flashStart = -1f;
+            SetOutlineLook(normalColor, normalWidth);
+            return;
+        }
+        float k = (1f - t) * (1f - t); // ease out
+        SetOutlineLook(Color.Lerp(normalColor, flashColor, k), normalWidth * (1f + 2.5f * k));
+    }
+
+    void SetOutlineLook(Color color, float width)
+    {
+        for (int i = 0; i < partCount; i++)
+        {
+            parts[i].line.startColor = color;
+            parts[i].line.endColor = color;
+            parts[i].line.widthMultiplier = width;
+        }
+    }
 
     // Shows the outlines of the parts in use and hides the unused ones.
     public void ShowOutline()

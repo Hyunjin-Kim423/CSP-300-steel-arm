@@ -67,6 +67,7 @@ public static class RadialMenuPrefabBuilder
         RectTransform hub = NewRect("Hub", root.transform, HubSize);
         Image hubBack = NewImage("Back", hub, s_Circle, BackPlate);
         Stretch(hubBack.rectTransform, -4f);
+        hubBack.raycastTarget = true; // pointing at the center counts as pointing at the menu
         RectTransform hubFront = NewRect("Front", hub, 0f);
         Stretch(hubFront);
         SetZ(hubFront, -12f);

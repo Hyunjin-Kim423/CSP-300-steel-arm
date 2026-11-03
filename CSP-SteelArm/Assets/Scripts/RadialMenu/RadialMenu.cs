@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 // Radial object menu (design A): the object's name and info in the center, robot actions on a half-ring,
@@ -11,9 +12,10 @@ using UnityEngine.UI;
 // When the menu moves to the other side of the object, the buttons slide across: each keeps its height, shrinks
 // into the center and grows out on the other side (mirrorTowardObject).
 //
-// The menu floats beside the object and follows the player's gaze a little: it moves around the object (yaw only)
-// toward where the player looks, but never more than maxFollowAngle away from the player->object direction,
-// and never so close to that direction that it would cover the object.
+// The menu floats beside the object and follows the player's gaze a little: sideways (yaw) up to maxFollowAngle and
+// up/down (pitch) up to maxPitchAngle from the player->object direction, never so close sideways that it covers the object.
+// Distance: while the menu is open, pushing either thumbstick forward / back moves it farther / closer
+// (remembered for the next menu).
 //
 // The prefab is built by SteelArm > Build Radial Menu Prefabs (Assets/Editor/RadialMenuPrefabBuilder.cs).
 public class RadialMenu : MonoBehaviour
@@ -54,12 +56,21 @@ public class RadialMenu : MonoBehaviour
     public float minSideAngle = 12f;
     [Tooltip("How quickly the menu catches up with the gaze. Lower = calmer.")]
     public float followSpeed = 3f;
-    [Tooltip("How much closer to the player than the object the menu floats (meters).")]
+    [Tooltip("The menu follows the player's gaze up/down too, up to this angle (degrees) from the object's direction. 0 = off.")]
+    public float maxPitchAngle = 15f;
+    [Tooltip("Distance from the player the menu starts at (meters); it is never placed behind the object.")]
+    public float preferredDistance = 0.55f;
+    [Tooltip("At least this much closer to the player than the object (meters).")]
     public float inFrontOfObject = 0.15f;
-    public float minDistance = 0.35f;
+    public float minDistance = 0.3f;
     public float maxDistance = 1.2f;
-    [Tooltip("Height of the menu relative to the object's center (meters).")]
-    public float heightOffset = 0.05f;
+    [Tooltip("Height of the menu above the line from the player to the object (meters).")]
+    public float heightOffset = 0.03f;
+
+    [Header("Thumbstick distance")]
+    [Tooltip("Thumbstick forward / back moves the menu farther / closer at this speed (m/s).")]
+    public float stickDistanceSpeed = 0.4f;
+    public float stickDeadZone = 0.25f;
 
     [Header("Connector")]
     public float lineWidth = 0.003f;
@@ -75,6 +86,11 @@ public class RadialMenu : MonoBehaviour
     const int DotSegments = 16;
 
     static Material s_LineMaterial;
+    static float s_DistanceAdjust;                                   // thumbstick change, kept for the next menu
+
+    InputAction leftStick;
+    InputAction rightStick;
+    float pitch;
 
     MenuTarget target;
     Transform head;
@@ -105,12 +121,14 @@ public class RadialMenu : MonoBehaviour
         FillInfo();
         BuildButtons();
         SetUpLines();
+        SetUpStickInput();
 
         // Appear right away beside the object, on the side the player is looking toward,
         // with the buttons already on the side away from the object.
         if (head != null)
         {
             yaw = TargetYaw();
+            pitch = TargetPitch();
             PlaceMenu();
             UpdateConnector();
             mirror = MirrorTarget();
@@ -228,7 +246,11 @@ public class RadialMenu : MonoBehaviour
             head = Camera.main.transform;
         }
 
-        yaw = Mathf.Lerp(yaw, TargetYaw(), 1f - Mathf.Exp(-followSpeed * Time.deltaTime));
+        float follow = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
+        yaw = Mathf.Lerp(yaw, TargetYaw(), follow);
+        pitch = Mathf.Lerp(pitch, TargetPitch(), follow);
+        if (!isClosing)
+            AdjustDistanceWithStick();
         PlaceMenu();
         if (isClosing)
             return;
@@ -249,9 +271,11 @@ public class RadialMenu : MonoBehaviour
 
         float gazeYaw = Vector3.SignedAngle(toObject, Flat(head.forward), Vector3.up); // + = looking right of the object
 
-        // Keep clear of the object: its half width plus the menu's half width, seen from the player.
+        // Keep clear of the object: its half width (at its distance) plus the menu's half width (at the menu's distance).
         float menuHalfWidth = (buttonRadius + 50f) * transform.lossyScale.x;
-        float minAngle = Mathf.Max(minSideAngle, Mathf.Atan2(target.halfWidth + menuHalfWidth, flatDistance) * Mathf.Rad2Deg);
+        float objectAngle = Mathf.Atan2(target.halfWidth, flatDistance) * Mathf.Rad2Deg;
+        float menuAngle = Mathf.Atan2(menuHalfWidth, MenuDistance(flatDistance)) * Mathf.Rad2Deg;
+        float minAngle = Mathf.Max(minSideAngle, objectAngle + menuAngle);
         float maxAngle = Mathf.Max(maxFollowAngle, minAngle);
 
         // The menu sits on the side the player looks toward; looking at the object itself keeps the current side.
@@ -266,6 +290,31 @@ public class RadialMenu : MonoBehaviour
         return result;
     }
 
+    // How far the gaze is above (+) or below (-) the object, in degrees, limited to maxPitchAngle.
+    float TargetPitch()
+    {
+        float gazeElevation = Mathf.Asin(Mathf.Clamp(head.forward.y, -1f, 1f)) * Mathf.Rad2Deg;
+        return Mathf.Clamp(gazeElevation - ObjectElevation(), -maxPitchAngle, maxPitchAngle);
+    }
+
+    // Angle of the player->object direction above the horizon (degrees).
+    float ObjectElevation()
+    {
+        Vector3 toObject = target.center - head.position;
+        return Mathf.Atan2(toObject.y, Flat(toObject).magnitude) * Mathf.Rad2Deg;
+    }
+
+    // Menu distance from the player (horizontal): the preferred distance plus the thumbstick change,
+    // never closer than minDistance and never at or behind the object.
+    float MenuDistance(float flatDistance)
+    {
+        float baseDistance = Mathf.Min(flatDistance - inFrontOfObject, preferredDistance);
+        float farthest = Mathf.Max(minDistance, Mathf.Min(maxDistance, flatDistance - 0.05f));
+        float distance = Mathf.Clamp(baseDistance + s_DistanceAdjust, minDistance, farthest);
+        s_DistanceAdjust = distance - baseDistance; // don't wind up past the limits
+        return distance;
+    }
+
     void PlaceMenu()
     {
         Vector3 toObject = Flat(target.center - head.position);
@@ -274,15 +323,53 @@ public class RadialMenu : MonoBehaviour
             return;
 
         Vector3 direction = Quaternion.AngleAxis(yaw, Vector3.up) * (toObject / flatDistance);
-        float distance = Mathf.Clamp(flatDistance - inFrontOfObject, minDistance, maxDistance);
+        float distance = MenuDistance(flatDistance);
+        float elevation = Mathf.Clamp(ObjectElevation() + pitch, -60f, 60f);
         Vector3 position = head.position + direction * distance;
-        position.y = target.center.y + heightOffset;
+        position.y = head.position.y + Mathf.Tan(elevation * Mathf.Deg2Rad) * distance + heightOffset;
 
         transform.position = position;
         transform.rotation = Quaternion.LookRotation(position - head.position, Vector3.up); // face the player
     }
 
     static Vector3 Flat(Vector3 v) => new Vector3(v.x, 0f, v.z);
+
+    // ---------- thumbstick distance ----------
+
+    void SetUpStickInput()
+    {
+        leftStick = new InputAction(binding: "<XRController>{LeftHand}/{Primary2DAxis}");
+        rightStick = new InputAction(binding: "<XRController>{RightHand}/{Primary2DAxis}");
+        leftStick.Enable();
+        rightStick.Enable();
+
+        // The center circle catches the ray too, so the object behind it is not picked through the menu.
+        Transform hubBack = hub.Find("Back");
+        if (hubBack != null && hubBack.TryGetComponent(out Image hubBackImage))
+            hubBackImage.raycastTarget = true;
+    }
+
+    void AdjustDistanceWithStick()
+    {
+        float input = StickInput(leftStick) + StickInput(rightStick);
+        if (input != 0f)
+            s_DistanceAdjust += input * stickDistanceSpeed * Time.deltaTime; // clamped in MenuDistance
+    }
+
+    // Forward / back on one thumbstick (0 inside the dead zone or for mostly sideways pushes).
+    float StickInput(InputAction stick)
+    {
+        Vector2 value = stick.ReadValue<Vector2>();
+        if (Mathf.Abs(value.y) < stickDeadZone || Mathf.Abs(value.y) < Mathf.Abs(value.x))
+            return 0f;
+        return value.y;
+    }
+
+    void OnDestroy()
+    {
+        leftStick?.Dispose();
+        rightStick?.Dispose();
+    }
 
     // ---------- connector line ----------
 

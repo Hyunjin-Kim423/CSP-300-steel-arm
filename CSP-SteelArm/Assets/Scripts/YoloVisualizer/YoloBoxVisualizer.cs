@@ -41,6 +41,19 @@ public class YoloBoxVisualizer : MonoBehaviour
     [Tooltip("A new scan replaces only the objects currently in view; objects elsewhere stay. Off = a scan replaces everything.")]
     public bool replaceOnlyInView = true;
 
+    [Header("Scan effect")]
+    [Tooltip("Play a wave over the real surfaces when scanning (ScanWaveEffect, uses the headset's depth).")]
+    public bool scanWave = true;
+    [Tooltip("Scan presses closer together than this (seconds) are ignored.")]
+    public float scanCooldown = 0.4f;
+    [Tooltip("While the result has not arrived, another wave is sent every this many seconds.")]
+    public float waitingWaveInterval = 1.2f;
+    [Tooltip("Stop waiting for a scan result after this many seconds.")]
+    public float scanResultTimeout = 5f;
+    [Tooltip("New outlines flash in this color when a scan result arrives.")]
+    public Color flashColor = new Color(0.55f, 0.9f, 1f, 1f);
+    public float flashDuration = 0.5f;
+
     [Tooltip("Untracked detections topic. Used in scan mode, when 'Use Tracking' is off, and as a fallback while the tracking topic is silent.")]
     public string topicName = "/yolo/detections";
 
@@ -103,6 +116,10 @@ public class YoloBoxVisualizer : MonoBehaviour
     // Scan mode
     int scanCount;
     long handledScanTicks = -1;
+    ScanWaveEffect wave;
+    float lastScanPress = float.NegativeInfinity;
+    float scanPendingSince = -1f;   // < 0: no scan result expected
+    float lastWaveTime;
 
     // Live mode: which topic the shown objects come from
     enum Source { None, Tracking, Detections }
@@ -137,6 +154,8 @@ public class YoloBoxVisualizer : MonoBehaviour
         unregisteredFillMaterial = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(unregisteredColor, fillAlpha) };
         objects = new DetectedObjectPool(lineMaterial, registeredFillMaterial, outlineColor, lineWidth);
         label = new ObjectLabel(labelHeight, labelDuration, boxColor);
+        if (scanWave && !TryGetComponent(out wave))
+            wave = gameObject.AddComponent<ScanWaveEffect>();
 
         if (EnvironmentRaycastManager.IsSupported)
         {
@@ -161,6 +180,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         {
             if (AnyScanPressed())
                 RequestScan();
+            KeepWavingWhileWaiting();
         }
         else
         {
@@ -175,7 +195,10 @@ public class YoloBoxVisualizer : MonoBehaviour
 
         float t = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         foreach (var obj in objects.Active)
+        {
             obj.Animate(t);
+            obj.UpdateFlash(Time.time, flashDuration, flashColor, outlineColor, lineWidth);
+        }
 
         UpdateHover();
 
@@ -254,10 +277,49 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void RequestScan()
     {
+        // Ignore rapid repeated presses.
+        if (Time.time - lastScanPress < scanCooldown)
+            return;
+        lastScanPress = Time.time;
+
+        // The open menu belongs to the old scan; its object may be replaced, so close it first.
+        if (ObjectMenuGenerator._instance != null)
+            ObjectMenuGenerator._instance.CloseCurrent();
+        label.Hide();
+
         if (publisher.RequestScan())
+        {
             Debug.Log("[steelarm] Scan requested");
+            scanPendingSince = Time.time;
+            PlayWave();
+        }
         else
+        {
             Debug.LogWarning("[steelarm] Scan ignored: the passthrough camera is not running yet.");
+        }
+    }
+
+    void PlayWave()
+    {
+        lastWaveTime = Time.time;
+        Camera cam = Camera.main;
+        if (wave != null && cam != null)
+            wave.Play(cam.transform.position);
+    }
+
+    // The result is still on its way: send another wave now and then, so the player sees the scan is running.
+    void KeepWavingWhileWaiting()
+    {
+        if (scanPendingSince < 0f)
+            return;
+        if (Time.time - scanPendingSince > scanResultTimeout)
+        {
+            scanPendingSince = -1f;
+            Debug.LogWarning("[steelarm] No scan result arrived. Is the YOLO node running?");
+            return;
+        }
+        if (Time.time - lastWaveTime > waitingWaveInterval)
+            PlayWave();
     }
 
     // Builds fixed outlines from the result of the latest scan frame (other frames and duplicates are ignored).
@@ -275,7 +337,16 @@ public class YoloBoxVisualizer : MonoBehaviour
         else
             objects.RemoveAll();
 
+        scanPendingSince = -1f;
         ShowResult(msg);
+
+        // The new outlines flash once as they appear.
+        string scanPrefix = $"s{scanCount}:";
+        foreach (var obj in objects.Active)
+        {
+            if (obj.key.StartsWith(scanPrefix))
+                obj.flashStart = Time.time;
+        }
         Debug.Log($"[steelarm] Scan {scanCount}: {msg.detections.Length} object(s)");
     }
 

@@ -40,6 +40,7 @@ public class DetectedObjectPool
         obj.hasMask = false;
         obj.hasDepth = false;
         obj.partCount = 0;
+        obj.flashStart = -1f;
         active.Add(key, obj);
         return obj;
     }
@@ -57,6 +58,16 @@ public class DetectedObjectPool
         if (!obj.active)
             return;
         obj.active = false;
+        if (obj.flashStart >= 0f)
+        {
+            obj.flashStart = -1f;
+            foreach (var part in obj.parts)
+            {
+                part.line.startColor = outlineColor;
+                part.line.endColor = outlineColor;
+                part.line.widthMultiplier = lineWidth;
+            }
+        }
         obj.partCount = 0;
         obj.HideAll();
         active.Remove(obj.key);

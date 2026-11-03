@@ -19,6 +19,14 @@ public class ObjectMenuGenerator : MonoBehaviour
             Destroy(gameObject);
     }
 
+    // Closes the open menu (with its animation), if any.
+    public void CloseCurrent()
+    {
+        if (current != null)
+            current.Close();
+        current = null;
+    }
+
     public void Open(MenuTarget target)
     {
         if (_uiPrefab == null)
