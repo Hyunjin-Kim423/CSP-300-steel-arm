@@ -1,8 +1,30 @@
-# T_robot_tag_base maps robot_base coordinates into robot_tag_0 coordinates.
-# TODO(physical): measure origin and axes after rigidly mounting tag 0; do not use placeholders.
+# Where the robot base is, seen from the tag.
+# This transform changes robot_base coordinates to robot_tag_0 coordinates (TF parent = robot_tag_0, child = robot_base).
+#
+# I measured with a tape (+-1 cm) on 2026-10-31.
+# The reference is the BACK OF THE CIRCUIT BOARD, not the pan axis.
+# robot_base is the same as base_link: the origin is on the shoulder_pan axis, x goes to the tag side (the user), y is left, z is up.
+#
+# Real setup:
+# - The tag center is 0.14 m in front of (+x) and 0.14 m below (-z) that reference, on the center line of the robot (y = 0).
+# - The tag face looks to robot +x. The face is vertical (I assumed tilt 0, I did not measure it).
+#
+# Tag frame of apriltag_ros 3.4.0 (Jazzy). I checked it with a synthetic tag seen from the front (R_cam_tag = diag(-1, 1, -1)):
+#   x = LEFT of the viewer, y = DOWN, z = OUT of the tag face to the viewer (for a tag with the top edge up).
+#
+# The tag is mounted UPSIDE DOWN (rotated 180 deg around the face normal).
+# So the detected tag x and y are opposite of the "top edge up" case.
+# I confirmed it on 2026-11-02, with detections after fixing the Quest camera frame (see camera_pose_tf orientation_fix):
+# the tag normal is horizontal, and tag +y points UP (z component +0.98).
+# Two ideas on the same day ("tag rotated 90 deg" and "+0.2 m to the side") were wrong. They came from the camera frame that was not fixed (it was rolled).
+# I removed them.
+#
+# So the base axes in the tag frame are: x_b = tag +z, y_b = tag +x, z_b = tag +y.
+# The base origin in the tag frame is R * (-0.14, 0, +0.14) = (0, +0.14, -0.14).
+# (For a tag with the top edge up: translation [0, -0.14, -0.14], rotation [0.5, -0.5, 0.5, 0.5].)
 /**:
   ros__parameters:
     parent_frame: robot_tag_0
     child_frame: robot_base
-    translation_m: []
-    rotation_xyzw: []
+    translation_m: [0.0, 0.14, -0.14]
+    rotation_xyzw: [0.5, 0.5, 0.5, -0.5]

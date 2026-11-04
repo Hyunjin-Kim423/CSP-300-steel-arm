@@ -12,3 +12,8 @@
       ids: [0]
       frames: [robot_tag_0]
       sizes: [0.08]
+    # Live Quest frames (2026-10-31): default decimate 2.0 / blur 0 found no quad on the tag; decimate 1.0 + blur 1.0 detects ID 0
+    # in ~90% of 640x480 frames (hamming 0). Verified only at close range with this tag/lighting.
+    detector:
+      decimate: 1.0
+      blur: 1.0

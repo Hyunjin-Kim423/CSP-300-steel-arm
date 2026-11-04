@@ -7,3 +7,7 @@
     camera_frame: quest_camera_optical
     publish_rate_hz: 12.0
     max_observation_age_s: 0.5
+    # The Quest app sends an inverted rotation, and it does not change the optical axes.
+    # camera_pose_tf fixes it (see quest_pose_to_optical).
+    # If this is off, the TF is rolled and tilted against gravity, and the tag alignment is tilted too.
+    orientation_fix: true

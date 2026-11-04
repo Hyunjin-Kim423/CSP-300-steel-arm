@@ -37,6 +37,11 @@ public class CameraImagePublisher : MonoBehaviour
     public string cameraPoseTopic = "/quest/camera/pose";
     public float publishRateHz = 10f;
     public int downsampleFactor = 2;
+    [Header("Head pose (independent of the camera frames)")]
+    public string headPoseTopic = "/quest/head/pose";
+    public float headPoseRateHz = 30f;
+    float headPoseTimer;
+    bool headCameraWarned;
     float timer;
     bool readbackPending;
     ulong sequence;
@@ -53,6 +58,7 @@ public class CameraImagePublisher : MonoBehaviour
         ros.RegisterPublisher<ImageMsg>(topicName);
         ros.RegisterPublisher<CameraInfoMsg>(cameraInfoTopic);
         ros.RegisterPublisher<PoseStampedMsg>(cameraPoseTopic);
+        ros.RegisterPublisher<PoseStampedMsg>(headPoseTopic);
 #if UNITY_EDITOR
         frameProvider = useMockCameraInEditor ? new MockCameraFrameProvider(mockWidth, mockHeight) : new QuestCameraFrameProvider(cameraAccess);
 #else
@@ -61,8 +67,42 @@ public class CameraImagePublisher : MonoBehaviour
 #endif
     }
 
+    // Head position for pointing: sent every few frames from the headset camera transform, so it keeps
+    // flowing when the (large) passthrough images are slow or unavailable.
+    void PublishHeadPose()
+    {
+        headPoseTimer += Time.deltaTime;
+        if (headPoseTimer < 1f / headPoseRateHz) return;
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            foreach (var c in Camera.allCameras)
+                if (c.enabled && c.stereoEnabled) { cam = c; break; }
+        }
+        if (cam == null)
+        {
+            if (!headCameraWarned) { Debug.LogWarning("Head pose not published: no main or stereo camera found."); headCameraWarned = true; }
+            return;
+        }
+        headPoseTimer = 0f;
+        var t = cam.transform;
+        Pose rosPose = UnityWorldCameraToRos(new Pose(t.position, t.rotation));
+        long ticks = (DateTime.UtcNow - k_UnixEpoch).Ticks;
+        var stamp = new TimeMsg((int)(ticks / TimeSpan.TicksPerSecond), (uint)(ticks % TimeSpan.TicksPerSecond * 100));
+        ros.Publish(headPoseTopic, new PoseStampedMsg
+        {
+            header = new HeaderMsg { stamp = stamp, frame_id = "quest_head" },
+            pose = new PoseMsg
+            {
+                position = new PointMsg(rosPose.position.x, rosPose.position.y, rosPose.position.z),
+                orientation = new QuaternionMsg(rosPose.rotation.x, rosPose.rotation.y, rosPose.rotation.z, rosPose.rotation.w)
+            }
+        });
+    }
+
     void Update()
     {
+        PublishHeadPose();
         timer += Time.deltaTime;
         if (timer < 1f / publishRateHz || readbackPending) return;
         Texture texture = null;
@@ -121,15 +161,24 @@ public class CameraImagePublisher : MonoBehaviour
         PublishMetadata(header, srcWidth, srcHeight, dstWidth, dstHeight, metadata);
     }
 
+    bool intrinsicsLogged;
     void PublishMetadata(HeaderMsg header, int srcWidth, int srcHeight, int width, int height, CameraFrameMetadata metadata)
     {
         // No crop or rectification is applied: rows are flipped and the image is uniformly decimated only.
-        // Intrinsics are scaled from the exact PCA sensor resolution to the transmitted resolution.
+        // Intrinsics are scaled from the exact PCA sensor resolution to the transmitted resolution (see crop handling below).
         if (metadata.SensorResolution.x <= 0 || metadata.SensorResolution.y <= 0) { Debug.LogWarning("CameraInfo rejected: invalid sensor resolution."); return; }
-        float sx = (float)srcWidth / metadata.SensorResolution.x, sy = (float)srcHeight / metadata.SensorResolution.y;
+        // Intrinsics are defined for the full sensor. The Quest texture is not squeezed (pixels stay square, so fx == fy); when its aspect
+        // differs from the sensor it is a centred crop: use ONE uniform scale and shift the principal point by the crop offset.
+        float s = Mathf.Max((float)srcWidth / metadata.SensorResolution.x, (float)srcHeight / metadata.SensorResolution.y);
+        float cropX = (metadata.SensorResolution.x * s - srcWidth) / 2f, cropY = (metadata.SensorResolution.y * s - srcHeight) / 2f;
+        if (!intrinsicsLogged)
+        {
+            intrinsicsLogged = true;
+            Debug.Log($"[CameraInfo] sensor={metadata.SensorResolution} texture={srcWidth}x{srcHeight} sent={width}x{height} rawF={metadata.FocalLength} rawC={metadata.PrincipalPoint} scale={s} crop=({cropX},{cropY})");
+        }
         float dx = (float)width / srcWidth, dy = (float)height / srcHeight;
-        double fx = metadata.FocalLength.x * sx * dx, fy = metadata.FocalLength.y * sy * dy;
-        double cx = metadata.PrincipalPoint.x * sx * dx, cy = metadata.PrincipalPoint.y * sy * dy;
+        double fx = metadata.FocalLength.x * s * dx, fy = metadata.FocalLength.y * s * dy;
+        double cx = (metadata.PrincipalPoint.x * s - cropX) * dx, cy = (metadata.PrincipalPoint.y * s - cropY) * dy;
         var info = new CameraInfoMsg { header = header, width = (uint)width, height = (uint)height, distortion_model = "unknown",
             d = Array.Empty<double>(), k = new[] { fx, 0d, cx, 0d, fy, cy, 0d, 0d, 1d }, r = new[] { 1d,0d,0d,0d,1d,0d,0d,0d,1d },
             p = new[] { fx,0d,cx,0d,0d,fy,cy,0d,0d,0d,1d,0d } };

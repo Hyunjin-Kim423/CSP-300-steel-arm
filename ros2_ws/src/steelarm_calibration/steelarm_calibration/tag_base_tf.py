@@ -12,8 +12,8 @@ class TagBaseTF(Node):
         super().__init__('tag_base_tf')
         self.declare_parameter('parent_frame', 'robot_tag_0')
         self.declare_parameter('child_frame', 'robot_base')
-        self.declare_parameter('translation_m', [])
-        self.declare_parameter('rotation_xyzw', [])
+        self.declare_parameter('translation_m', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('rotation_xyzw', Parameter.Type.DOUBLE_ARRAY)
         # Jazzy represents an empty YAML sequence as a not-set parameter.  The
         # production mount file deliberately uses empty values until a physical
         # tag-to-base measurement is available.  get_parameter_or avoids the

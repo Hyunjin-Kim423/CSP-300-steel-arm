@@ -33,3 +33,36 @@ def unity_quaternion_to_ros_optical(q):
     # Coordinate-basis conversion C*R*C^-1 for Unity camera-local -> ROS optical.
     # Implemented through matrices elsewhere at runtime; this function guards only normalized input.
     return normalize_quaternion(q)
+
+
+def quaternion_conjugate(q):
+    return (-q[0], -q[1], -q[2], q[3])
+
+
+def quaternion_multiply(a, b):
+    """Hamilton product a * b for (x, y, z, w) quaternions."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
+# Rotation matrix [[0,0,1],[-1,0,0],[0,-1,0]].
+# It writes the optical axes (x right, y down, z forward) in the ROS body frame (x forward, y left, z up).
+BODY_TO_OPTICAL_QUAT = (-0.5, 0.5, -0.5, 0.5)
+
+
+def quest_pose_to_optical(q):
+    """Fix the camera rotation from the Quest app (CameraImagePublisher.UnityWorldCameraToRos).
+
+    The app changes the Unity quaternion to (z, -x, y, w).
+    The correct Unity -> ROS change is (-z, x, -y, w). So the app sends the opposite (inverse) rotation.
+    Also, the app does not change the camera body axes to the optical axes.
+    So the correct world-from-optical rotation is conj(q_published) * BODY_TO_OPTICAL.
+
+    I checked it with tag detections when the head was in many directions (the same answer came from 2 recordings).
+    I also checked with gravity (the optical "down" axis points to the floor when the headset is upright).
+    """
+    return normalize_quaternion(quaternion_multiply(quaternion_conjugate(normalize_quaternion(q)), BODY_TO_OPTICAL_QUAT))
