@@ -18,6 +18,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         public string text;
         public float depth;
         public Vector3 cameraPosition;
+        public DetectionMsg detectionMsg;
     }
 
     class Controller
@@ -66,6 +67,16 @@ public class YoloBoxVisualizer : MonoBehaviour
     float lastDetectionTime;
     float labelHideTime;
 
+    public static YoloBoxVisualizer Instance { get; private set; }
+
+    void Awake()
+    {
+        if (Instance == null)
+            Instance = this;
+        else
+            Destroy(this);
+    }
+
     void Start()
     {
         publisher = GetComponent<CameraImagePublisher>();
@@ -93,7 +104,7 @@ public class YoloBoxVisualizer : MonoBehaviour
 
         ROSConnection.GetOrCreateInstance().Subscribe<DetectionArrayMsg>(topicName, OnDetections);
     }
-
+    
     void OnDestroy()
     {
         foreach (var controller in controllers)
@@ -133,7 +144,6 @@ public class YoloBoxVisualizer : MonoBehaviour
             {
                 pointed = box;
                 nearest = distance;
-                ObjectMenuGenerator._instance.GenerateUI(ray, distance, pointed.text);   
             }
         }
 
@@ -142,6 +152,9 @@ public class YoloBoxVisualizer : MonoBehaviour
             label.gameObject.SetActive(false);
             return;
         }
+
+        // 가장 가까운 박스가 확정된 뒤 한 번만 메뉴 생성
+        ObjectMenuGenerator._instance.GenerateUI(ray, nearest, pointed.detectionMsg);
 
         Vector3 topLeft = pointed.corners[1];
         label.text = pointed.text;
@@ -165,6 +178,7 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void OnDetections(DetectionArrayMsg msg)
     {
+        // Debug.Log("[steelarm] On Yolo detection");
         var cameraAccess = publisher.CameraAccess;
         if (!cameraAccess.IsPlaying) return;
         if (!publisher.TryGetFrame(msg.header.stamp, out var frame)) return;
@@ -196,6 +210,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             box.text = $"{det.class_name} {det.score:0.00}";
             box.depth = depth;
             box.cameraPosition = pose.position;
+            box.detectionMsg = det;
         }
 
         HideBoxesFrom(count);
