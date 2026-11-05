@@ -47,6 +47,12 @@ SO-101 Robot Arm
 
 The `arm_pointer` package is not in this repository yet.
 
+### Branch Description
+- DY: integrate calibration of coordinates system with Meta Quest camera.
+- Jin: AR test. (most of UI)
+- gwen-tf2: calibrate coordinates system. test with USB webcam first
+- gwen-DOFSim: 2-DOF, 3-DOF simulation
+
 ## Requirements
 
 **Hardware**
