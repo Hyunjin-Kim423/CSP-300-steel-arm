@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Robotics.ROSTCPConnector;
 using RosMessageTypes.BuiltinInterfaces;
 using RosMessageTypes.Sensor;
+using RosMessageTypes.Geometry;
 using RosMessageTypes.Std;
 
 #if !ROS2
@@ -18,22 +19,37 @@ public class CameraImagePublisher : MonoBehaviour
     {
         public Pose cameraPose;
         public Vector2Int imageSize;
+        public ulong sequence;
+        public bool isMock;
     }
 
     const int k_MaxRememberedFrames = 30;
     static readonly DateTime k_UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     [SerializeField] Meta.XR.PassthroughCameraAccess cameraAccess;
+    [Header("Calibration bridge")]
+    [SerializeField] bool useMockCameraInEditor;
+    [SerializeField] int mockWidth = 640;
+    [SerializeField] int mockHeight = 480;
     ROSConnection ros;
-    public string topicName = "camera/rgb/image_raw";
+    public string topicName = "/quest/camera/image_raw";
+    public string cameraInfoTopic = "/quest/camera/camera_info";
+    public string cameraPoseTopic = "/quest/camera/pose";
     [Tooltip("Publish camera frames continuously at publishRateHz. When off, a frame is only sent when RequestScan() is called.")]
     public bool continuousPublish = true;
     public float publishRateHz = 10f;
     public int downsampleFactor = 2;
+    [Header("Head pose (independent of the camera frames)")]
+    public string headPoseTopic = "/quest/head/pose";
+    public float headPoseRateHz = 30f;
+    float headPoseTimer;
+    bool headCameraWarned;
     float timer;
     bool readbackPending;
     int pendingScanFrames;
     long lastScanTicks = -1;
+    ulong sequence;
+    ICameraFrameProvider frameProvider;
 
     readonly Dictionary<long, FrameInfo> recentFrames = new Dictionary<long, FrameInfo>();
     readonly Queue<long> recentFrameOrder = new Queue<long>();
@@ -56,6 +72,48 @@ public class CameraImagePublisher : MonoBehaviour
     {
         ros = ROSConnection.GetOrCreateInstance();
         ros.RegisterPublisher<ImageMsg>(topicName);
+        ros.RegisterPublisher<CameraInfoMsg>(cameraInfoTopic);
+        ros.RegisterPublisher<PoseStampedMsg>(cameraPoseTopic);
+        ros.RegisterPublisher<PoseStampedMsg>(headPoseTopic);
+#if UNITY_EDITOR
+        frameProvider = useMockCameraInEditor ? new MockCameraFrameProvider(mockWidth, mockHeight) : new QuestCameraFrameProvider(cameraAccess);
+#else
+        if (useMockCameraInEditor) Debug.LogError("Mock camera was selected in a player build; refusing to publish calibration frames.");
+        frameProvider = useMockCameraInEditor ? null : new QuestCameraFrameProvider(cameraAccess);
+#endif
+    }
+
+    // Head position for pointing: sent every few frames from the headset camera transform, so it keeps
+    // flowing when the (large) passthrough images are slow or unavailable.
+    void PublishHeadPose()
+    {
+        headPoseTimer += Time.deltaTime;
+        if (headPoseTimer < 1f / headPoseRateHz) return;
+        var cam = Camera.main;
+        if (cam == null)
+        {
+            foreach (var c in Camera.allCameras)
+                if (c.enabled && c.stereoEnabled) { cam = c; break; }
+        }
+        if (cam == null)
+        {
+            if (!headCameraWarned) { Debug.LogWarning("Head pose not published: no main or stereo camera found."); headCameraWarned = true; }
+            return;
+        }
+        headPoseTimer = 0f;
+        var t = cam.transform;
+        Pose rosPose = UnityWorldCameraToRos(new Pose(t.position, t.rotation));
+        long ticks = (DateTime.UtcNow - k_UnixEpoch).Ticks;
+        var stamp = new TimeMsg((int)(ticks / TimeSpan.TicksPerSecond), (uint)(ticks % TimeSpan.TicksPerSecond * 100));
+        ros.Publish(headPoseTopic, new PoseStampedMsg
+        {
+            header = new HeaderMsg { stamp = stamp, frame_id = "quest_head" },
+            pose = new PoseMsg
+            {
+                position = new PointMsg(rosPose.position.x, rosPose.position.y, rosPose.position.z),
+                orientation = new QuaternionMsg(rosPose.rotation.x, rosPose.rotation.y, rosPose.rotation.z, rosPose.rotation.w)
+            }
+        });
     }
 
     // Sends the next camera frame as a scan frame. Returns false when the camera is not running yet.
@@ -78,30 +136,38 @@ public class CameraImagePublisher : MonoBehaviour
 
     void Update()
     {
+        PublishHeadPose();
         timer += Time.deltaTime;
         if (readbackPending || !cameraAccess.IsPlaying) return;
         bool scan = pendingScanFrames > 0;
         if (!scan && (!continuousPublish || timer < 1f / publishRateHz)) return;
+        Texture texture = null;
+        CameraFrameMetadata metadata = default;
+        if (frameProvider == null || !frameProvider.TryGetFrame(out texture, out metadata))
+        {
+            Debug.LogWarning($"Quest calibration camera unavailable: {metadata.Status}");
+            return;
+        }
         timer = 0f;
         if (scan) pendingScanFrames--;
-
-        Pose cameraPose = cameraAccess.GetCameraPose();
-        long ticks = (cameraAccess.Timestamp - k_UnixEpoch).Ticks;
+        // Capture texture, physical RGB-camera pose, sensor intrinsics and source timestamp as one frame record.
+        long ticks = (metadata.TimestampUtc - k_UnixEpoch).Ticks;
         readbackPending = true;
-        AsyncGPUReadback.Request(cameraAccess.GetTexture(), 0, request =>
+        AsyncGPUReadback.Request(texture, 0, request =>
         {
             readbackPending = false;
             if (request.hasError)
             {
+                Debug.LogWarning("Quest calibration GPU readback failed; frame rejected.");
                 if (scan) pendingScanFrames++; // retry the scan with the next frame
                 return;
             }
             if (scan) lastScanTicks = ticks;
-            Publish(request.GetData<Color32>(), request.width, request.height, ticks, cameraPose);
+            Publish(request.GetData<Color32>(), request.width, request.height, ticks, metadata);
         });
     }
 
-    void Publish(NativeArray<Color32> pixels, int srcWidth, int srcHeight, long ticks, Pose cameraPose)
+    void Publish(NativeArray<Color32> pixels, int srcWidth, int srcHeight, long ticks, CameraFrameMetadata metadata)
     {
         // Debug.Log("[steelarm] Cam Image publishing");
         int dstWidth = srcWidth / downsampleFactor;
@@ -121,15 +187,14 @@ public class CameraImagePublisher : MonoBehaviour
             }
         }
 
-        RememberFrame(ticks, new FrameInfo { cameraPose = cameraPose, imageSize = new Vector2Int(dstWidth, dstHeight) });
+        var stamp = new TimeMsg((int)(ticks / TimeSpan.TicksPerSecond), (uint)(ticks % TimeSpan.TicksPerSecond * 100));
+        var header = new HeaderMsg { stamp = stamp, frame_id = metadata.IsMock ? "quest_camera_optical_mock" : "quest_camera_optical" };
+        var id = ++sequence;
+        RememberFrame(ticks, new FrameInfo { cameraPose = metadata.WorldPose, imageSize = new Vector2Int(dstWidth, dstHeight), sequence = id, isMock = metadata.IsMock });
 
         var msg = new ImageMsg
         {
-            header = new HeaderMsg
-            {
-                stamp = new TimeMsg((int)(ticks / TimeSpan.TicksPerSecond), (uint)(ticks % TimeSpan.TicksPerSecond * 100)),
-                frame_id = "quest_camera"
-            },
+            header = header,
             height = (uint)dstHeight,
             width = (uint)dstWidth,
             encoding = "rgb8",
@@ -137,6 +202,40 @@ public class CameraImagePublisher : MonoBehaviour
             data = data
         };
         ros.Publish(topicName, msg);
+        PublishMetadata(header, srcWidth, srcHeight, dstWidth, dstHeight, metadata);
+    }
+
+    bool intrinsicsLogged;
+    void PublishMetadata(HeaderMsg header, int srcWidth, int srcHeight, int width, int height, CameraFrameMetadata metadata)
+    {
+        // No crop or rectification is applied: rows are flipped and the image is uniformly decimated only.
+        // Intrinsics are scaled from the exact PCA sensor resolution to the transmitted resolution (see crop handling below).
+        if (metadata.SensorResolution.x <= 0 || metadata.SensorResolution.y <= 0) { Debug.LogWarning("CameraInfo rejected: invalid sensor resolution."); return; }
+        // Intrinsics are defined for the full sensor. The Quest texture is not squeezed (pixels stay square, so fx == fy); when its aspect
+        // differs from the sensor it is a centred crop: use ONE uniform scale and shift the principal point by the crop offset.
+        float s = Mathf.Max((float)srcWidth / metadata.SensorResolution.x, (float)srcHeight / metadata.SensorResolution.y);
+        float cropX = (metadata.SensorResolution.x * s - srcWidth) / 2f, cropY = (metadata.SensorResolution.y * s - srcHeight) / 2f;
+        if (!intrinsicsLogged)
+        {
+            intrinsicsLogged = true;
+            Debug.Log($"[CameraInfo] sensor={metadata.SensorResolution} texture={srcWidth}x{srcHeight} sent={width}x{height} rawF={metadata.FocalLength} rawC={metadata.PrincipalPoint} scale={s} crop=({cropX},{cropY})");
+        }
+        float dx = (float)width / srcWidth, dy = (float)height / srcHeight;
+        double fx = metadata.FocalLength.x * s * dx, fy = metadata.FocalLength.y * s * dy;
+        double cx = (metadata.PrincipalPoint.x * s - cropX) * dx, cy = (metadata.PrincipalPoint.y * s - cropY) * dy;
+        var info = new CameraInfoMsg { header = header, width = (uint)width, height = (uint)height, distortion_model = "unknown",
+            d = Array.Empty<double>(), k = new[] { fx, 0d, cx, 0d, fy, cy, 0d, 0d, 1d }, r = new[] { 1d,0d,0d,0d,1d,0d,0d,0d,1d },
+            p = new[] { fx,0d,cx,0d,0d,fy,cy,0d,0d,0d,1d,0d } };
+        ros.Publish(cameraInfoTopic, info);
+        Pose rosPose = UnityWorldCameraToRos(metadata.WorldPose);
+        ros.Publish(cameraPoseTopic, new PoseStampedMsg { header = header, pose = new PoseMsg { position = new PointMsg(rosPose.position.x, rosPose.position.y, rosPose.position.z), orientation = new QuaternionMsg(rosPose.rotation.x, rosPose.rotation.y, rosPose.rotation.z, rosPose.rotation.w) } });
+    }
+
+    static Pose UnityWorldCameraToRos(Pose unity)
+    {
+        // Unity world (right, up, forward; LH) -> ROS world (forward, left, up; RH).
+        // Camera local Unity -> ROS optical is (right, down, forward). Full basis conversion is validated in ROS tests.
+        var p = unity.position; return new Pose(new Vector3(p.z, -p.x, p.y), new Quaternion(unity.rotation.z, -unity.rotation.x, unity.rotation.y, unity.rotation.w).normalized);
     }
 
     public bool TryGetFrame(TimeMsg stamp, out FrameInfo frame)

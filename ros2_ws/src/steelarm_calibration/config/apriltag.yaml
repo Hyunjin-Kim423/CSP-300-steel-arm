@@ -1,0 +1,10 @@
+# Values must match the physical print and installed apriltag_ros Jazzy package schema.
+# Confirmed physical measurement: black code detection edge, corner-to-corner = 8 cm.
+# This is the apriltag detector edge, not the surrounding paper or rigid box size.
+tag_family: 36h11
+tag_id: 0
+tag_frame: robot_tag_0
+tag_size_m: 0.08
+image_topic: /quest/camera/image_raw
+camera_info_topic: /quest/camera/camera_info
+# Validate installed apriltag_ros parameter/topic names before wiring this file into launch.
