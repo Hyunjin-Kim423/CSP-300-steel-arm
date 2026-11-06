@@ -79,12 +79,9 @@ public static class RadialMenuPrefabBuilder
         TMP_Text infoText = NewText("Info", hubFront, "Confidence 0.00", 13f, Secondary, FontStyles.Normal);
         Place(infoText.rectTransform, new Vector2(0f, -10f), new Vector2(118f, 20f));
 
-        Image chip = NewImage("Status", hubFront, s_Pill, Color.green);
-        chip.type = Image.Type.Sliced;
-        chip.pixelsPerUnitMultiplier = 4f;
-        Place(chip.rectTransform, new Vector2(0f, -36f), new Vector2(92f, 22f));
-        TMP_Text statusText = NewText("Text", chip.rectTransform, "0 actions", 12f, DarkText, FontStyles.Bold);
-        Stretch(statusText.rectTransform);
+        // "n actions" as plain text (no chip behind it); RadialMenu colors it registered / unregistered.
+        TMP_Text statusText = NewText("Status", hubFront, "0 actions", 12f, Color.green, FontStyles.Bold);
+        Place(statusText.rectTransform, new Vector2(0f, -36f), new Vector2(92f, 22f));
 
         RectTransform buttonRoot = NewRect("Buttons", root.transform, 0f);
 

@@ -117,6 +117,14 @@ public class ScanWaveEffect : MonoBehaviour
 
     // ---------- set-up ----------
 
+    // Brightness 0..1 (settings menu).
+    public void SetIntensity(float value)
+    {
+        intensity = Mathf.Clamp01(value);
+        if (material != null)
+            material.SetFloat("_Intensity", intensity);
+    }
+
     bool EnsureSetUp()
     {
         if (material != null)

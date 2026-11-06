@@ -8,12 +8,13 @@ public class DetectedObjectPool
 {
     readonly Material lineMaterial;
     readonly Material fillMaterial;
-    readonly Color outlineColor;
-    readonly float lineWidth;
+    Color outlineColor;
+    float lineWidth;
 
     readonly Dictionary<string, DetectedObject> active = new Dictionary<string, DetectedObject>();
     readonly Stack<DetectedObject> free = new Stack<DetectedObject>();
     readonly List<DetectedObject> scratch = new List<DetectedObject>();
+    readonly GameObject root = new GameObject("YoloObjects"); // parent of every line / fill, so all can be hidden at once
 
     public DetectedObjectPool(Material lineMaterial, Material fillMaterial, Color outlineColor, float lineWidth)
     {
@@ -22,6 +23,9 @@ public class DetectedObjectPool
         this.outlineColor = outlineColor;
         this.lineWidth = lineWidth;
     }
+
+    // Hides / shows every drawn object without changing them (e.g. while the settings panel is open).
+    public void SetVisible(bool visible) => root.SetActive(visible);
 
     // Objects currently shown. Don't add or remove while iterating; use RemoveWhere for that.
     public IEnumerable<DetectedObject> Active => active.Values;
@@ -74,6 +78,30 @@ public class DetectedObjectPool
         free.Push(obj);
     }
 
+    // New outline color / width (settings menu) for every pooled line. Flashing outlines settle to it by themselves.
+    public void SetLook(Color color, float width)
+    {
+        outlineColor = color;
+        lineWidth = width;
+        foreach (var obj in active.Values)
+        {
+            if (obj.flashStart < 0f)
+                SetLook(obj);
+        }
+        foreach (var obj in free)
+            SetLook(obj);
+    }
+
+    void SetLook(DetectedObject obj)
+    {
+        foreach (var part in obj.parts)
+        {
+            part.line.startColor = outlineColor;
+            part.line.endColor = outlineColor;
+            part.line.widthMultiplier = lineWidth;
+        }
+    }
+
     public void RemoveWhere(Predicate<DetectedObject> match)
     {
         scratch.Clear();
@@ -91,6 +119,7 @@ public class DetectedObjectPool
     LineRenderer CreateLine()
     {
         var line = new GameObject("YoloOutline").AddComponent<LineRenderer>();
+        line.transform.SetParent(root.transform, false);
         line.useWorldSpace = true;
         line.loop = true;
         line.positionCount = 4;
@@ -105,6 +134,7 @@ public class DetectedObjectPool
     {
         // Vertices are written in world space, so the object stays at the origin.
         var fillObject = new GameObject("YoloFill");
+        fillObject.transform.SetParent(root.transform, false);
         var fill = fillObject.AddComponent<MeshFilter>();
         fill.sharedMesh = new Mesh { name = "YoloFill" };
         fill.sharedMesh.MarkDynamic();

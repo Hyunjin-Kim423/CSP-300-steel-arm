@@ -29,6 +29,7 @@ public class DetectedObject
     // What YOLO said
     public DetectionMsg detection;
     public string text;           // e.g. "cup 0.87"
+    public bool registered;       // listed in yolo_dectection_list.json (has robot actions)
     public Color color;           // fill / label color (registered in the JSON or not)
 
     // Where it is

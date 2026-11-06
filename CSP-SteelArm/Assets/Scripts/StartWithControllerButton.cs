@@ -18,13 +18,12 @@ public class StartWithControllerButton : MonoBehaviour
         "<XRController>{RightHand}/{SecondaryButton}",
         "<XRController>{LeftHand}/{SecondaryButton}"
     };
-    [Tooltip("Text shown on the CoachingUI Start button, which becomes a hint instead of a button.")]
-    public string startHint = "Press B or Y";
     [Tooltip("Keep the CoachingUI Start button clickable as well (its label is left as it is).")]
     public bool keepStartButton = false;
 
     InputAction startAction;
     GoalManager goalManager;
+    TMPro.TMP_Text hintLabel;
     bool started;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -63,8 +62,17 @@ public class StartWithControllerButton : MonoBehaviour
             button.onClick.AddListener(() => started = true); // clicking it also counts as started
             return;
         }
-        label.text = startHint;
+        hintLabel = label;
+        ShowHint();
+        AppSettings.Changed += ShowHint; // the language can be changed before starting
         button.interactable = false;
+    }
+
+    // Hint on the CoachingUI Start button ("B 또는 Y를 누르세요" / "Press B or Y").
+    void ShowHint()
+    {
+        if (!started && hintLabel != null)
+            Loc.Set(hintLabel, "start.hint");
     }
 
     void Update()
@@ -90,6 +98,7 @@ public class StartWithControllerButton : MonoBehaviour
 
     void OnDestroy()
     {
+        AppSettings.Changed -= ShowHint;
         startAction?.Dispose();
     }
 }

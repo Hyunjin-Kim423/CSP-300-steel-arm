@@ -15,7 +15,9 @@ using EnvironmentRaycastManager = Meta.XR.EnvironmentRaycastManager;
 //   3. Interact      The object a controller points at is filled (green: in yolo_dectection_list.json, red: not);
 //                    the trigger opens its menu and label.
 //
-// Helpers (Assets/Script/YoloVisualizer):
+// Most options here are overwritten by the settings menu (AppSettings, see ApplySettings).
+//
+// Helpers (Assets/Scripts/YoloVisualizer):
 //   DetectedObject / DetectedObjectPool   one drawn object and the pool that reuses them
 //   MaskOutline                           mask point list -> clean outlines
 //   Polygon2D                             fill triangulation, point-in-outline
@@ -112,6 +114,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     float lastDetectionTime;
     bool warnedNoMask;
     bool subscribed;
+    bool settingsOpen;      // the settings panel is open: results hidden, no scanning or selecting
 
     // Scan mode
     int scanCount;
@@ -125,6 +128,10 @@ public class YoloBoxVisualizer : MonoBehaviour
     enum Source { None, Tracking, Detections }
     Source currentSource = Source.None;
     float lastTrackingTime = float.NegativeInfinity;
+
+    // Status for the settings menu
+    public float LastResultTime { get; private set; } = -1f;
+    public int LastResultCount { get; private set; }
 
     static readonly List<Vector2> s_Resampled = new List<Vector2>();
 
@@ -141,7 +148,6 @@ public class YoloBoxVisualizer : MonoBehaviour
     void Start()
     {
         publisher = GetComponent<CameraImagePublisher>();
-        publisher.continuousPublish = !scanOnButton; // scan mode: frames are only sent on request
         xrOrigin = FindAnyObjectByType<XROrigin>();
         controllers = new[]
         {
@@ -154,8 +160,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         unregisteredFillMaterial = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(unregisteredColor, fillAlpha) };
         objects = new DetectedObjectPool(lineMaterial, registeredFillMaterial, outlineColor, lineWidth);
         label = new ObjectLabel(labelHeight, labelDuration, boxColor);
-        if (scanWave && !TryGetComponent(out wave))
-            wave = gameObject.AddComponent<ScanWaveEffect>();
+        TryGetComponent(out wave);
 
         if (EnvironmentRaycastManager.IsSupported)
         {
@@ -164,10 +169,102 @@ public class YoloBoxVisualizer : MonoBehaviour
             if (environmentRaycast == null)
                 environmentRaycast = gameObject.AddComponent<EnvironmentRaycastManager>();
         }
+
+        ApplySettings();
+        AppSettings.Changed += ApplySettings;
+        SettingsMenu.OpenStateChanged += OnSettingsOpenChanged;
+        if (SettingsMenu.AnyOpen)
+            OnSettingsOpenChanged(true);
+    }
+
+    // The settings panel opened / closed: the object menu is closed, the scan results are hidden until it closes
+    // (they are kept; live results keep updating in the background).
+    void OnSettingsOpenChanged(bool open)
+    {
+        settingsOpen = open;
+        objects.SetVisible(!open);
+        if (!open)
+            return;
+        if (ObjectMenuGenerator._instance != null)
+            ObjectMenuGenerator._instance.CloseCurrent();
+        label.Hide();
+        hovered?.HideFill();
+        hovered = null;
+        scanPendingSince = -1f; // no more "still scanning" waves over the panel
+    }
+
+    // ===================== Settings =====================
+
+    // Takes the values from the settings menu. Called at start and whenever a setting changes.
+    void ApplySettings()
+    {
+        AppSettings s = AppSettings.Current;
+
+        highlightStyle = s.silhouette ? HighlightStyle.Silhouette : HighlightStyle.BoundingBox;
+        replaceOnlyInView = s.replaceOnlyInView;
+        useTracking = s.useTracking;
+
+        scanWave = s.scanWave;
+        if (scanWave && wave == null)
+            wave = gameObject.AddComponent<ScanWaveEffect>();
+        if (wave != null)
+            wave.SetIntensity(s.waveIntensity);
+
+        // Scan mode <-> live mode: the shown objects belong to the old mode, so start over.
+        bool buttonMode = s.scanMode == AppSettings.ScanMode.Button;
+        if (buttonMode != scanOnButton)
+        {
+            scanOnButton = buttonMode;
+            if (ObjectMenuGenerator._instance != null)
+                ObjectMenuGenerator._instance.CloseCurrent();
+            label.Hide();
+            objects.RemoveAll();
+            hovered = null;
+            currentSource = Source.None;
+            scanPendingSince = -1f;
+            Debug.Log("[steelarm] Scan mode: " + (scanOnButton ? "button" : "live"));
+        }
+        publisher.continuousPublish = !scanOnButton; // scan mode: frames are only sent on request
+
+        // Colors, fill opacity and outline width; objects already shown are updated too.
+        boxColor = s.RegisteredColor;
+        unregisteredColor = s.UnregisteredColor;
+        fillAlpha = s.fillAlpha;
+        registeredFillMaterial.color = WithAlpha(boxColor, fillAlpha);
+        unregisteredFillMaterial.color = WithAlpha(unregisteredColor, fillAlpha);
+        lineWidth = s.OutlineWidthMeters;
+        objects.SetLook(outlineColor, lineWidth);
+        foreach (var obj in objects.Active)
+            obj.color = obj.registered ? boxColor : unregisteredColor;
+        if (hovered != null && hovered.active)
+            hovered.ShowFill(FillMaterialFor(hovered));
+
+        if (!s.showLabel)
+            label.Hide();
+    }
+
+    // Shown in Settings > Advanced: where the shown results come from.
+    public string ResultSourceDescription
+    {
+        get
+        {
+            if (!subscribed)
+                return Loc.T("status.notStarted");
+            if (scanOnButton)
+                return Loc.F("status.scanTopic", topicName);
+            switch (currentSource)
+            {
+                case Source.Tracking: return Loc.F("status.trackingTopic", trackingTopicName);
+                case Source.Detections: return Loc.F("status.detectionTopic", topicName);
+                default: return Loc.T("status.waiting");
+            }
+        }
     }
 
     void OnDestroy()
     {
+        AppSettings.Changed -= ApplySettings;
+        SettingsMenu.OpenStateChanged -= OnSettingsOpenChanged;
         if (controllers == null)
             return;
         foreach (var controller in controllers)
@@ -178,7 +275,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     {
         if (scanOnButton)
         {
-            if (AnyScanPressed())
+            if (!settingsOpen && AnyScanPressed())
                 RequestScan();
             KeepWavingWhileWaiting();
         }
@@ -200,6 +297,9 @@ public class YoloBoxVisualizer : MonoBehaviour
             obj.UpdateFlash(Time.time, flashDuration, flashColor, outlineColor, lineWidth);
         }
 
+        if (settingsOpen)
+            return;
+
         UpdateHover();
 
         foreach (var controller in controllers)
@@ -220,15 +320,15 @@ public class YoloBoxVisualizer : MonoBehaviour
         subscribed = true;
         var ros = ROSConnection.GetOrCreateInstance();
         // Both topics are subscribed: tracking is preferred, detections keep things working if tracking stops.
+        // (Tracking is always subscribed so it can be switched on in the settings; the handler ignores it when off.)
         ros.Subscribe<DetectionArrayMsg>(topicName, OnUntrackedDetections);
-        if (useTracking)
-            ros.Subscribe<DetectionArrayMsg>(trackingTopicName, OnTrackedDetections);
+        ros.Subscribe<DetectionArrayMsg>(trackingTopicName, OnTrackedDetections);
     }
 
     void OnTrackedDetections(DetectionArrayMsg msg)
     {
         // A single scan frame gives the tracker nothing to track, so scan mode uses the plain detections.
-        if (scanOnButton)
+        if (scanOnButton || !useTracking)
             return;
         lastTrackingTime = Time.time;
         UseSource(Source.Tracking);
@@ -303,7 +403,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     {
         lastWaveTime = Time.time;
         Camera cam = Camera.main;
-        if (wave != null && cam != null)
+        if (scanWave && wave != null && cam != null)
             wave.Play(cam.transform.position);
     }
 
@@ -360,6 +460,8 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void ShowResult(DetectionArrayMsg msg)
     {
+        LastResultTime = Time.time;
+        LastResultCount = msg.detections.Length;
         if (!publisher.CameraAccess.IsPlaying) return;
         if (!publisher.TryGetFrame(msg.header.stamp, out var info)) return;
         var frame = new ScanFrame(publisher.CameraAccess, info.cameraPose, info.imageSize);
@@ -415,7 +517,8 @@ public class YoloBoxVisualizer : MonoBehaviour
         obj.detection = det;
         obj.text = $"{det.class_name} {det.score:0.00}";
         // Green if the object has robot actions in yolo_dectection_list.json, red otherwise.
-        obj.color = RobotActionRegistry.GetActions(det.class_name) != null ? boxColor : unregisteredColor;
+        obj.registered = RobotActionRegistry.GetActions(det.class_name) != null;
+        obj.color = obj.registered ? boxColor : unregisteredColor;
         obj.cameraPosition = frame.CameraPosition;
         obj.lastSeen = Time.time;
 
@@ -515,7 +618,8 @@ public class YoloBoxVisualizer : MonoBehaviour
             return;
         }
         ObjectMenuGenerator._instance.Open(MenuTarget.From(pointed));
-        // label.Show(pointed);
+        if (AppSettings.Current.showLabel)
+            label.Show(pointed);
     }
 
     DetectedObject FindPointedObject(Ray ray, out float nearest)
@@ -533,7 +637,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         return pointed;
     }
 
-    Material FillMaterialFor(DetectedObject obj) => obj.color == boxColor ? registeredFillMaterial : unregisteredFillMaterial;
+    Material FillMaterialFor(DetectedObject obj) => obj.registered ? registeredFillMaterial : unregisteredFillMaterial;
 
     static Color WithAlpha(Color c, float a) => new Color(c.r, c.g, c.b, a);
 }

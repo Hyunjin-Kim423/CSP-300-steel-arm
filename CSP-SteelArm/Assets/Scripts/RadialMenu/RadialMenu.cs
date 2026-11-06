@@ -15,7 +15,9 @@ using UnityEngine.UI;
 // The menu floats beside the object and follows the player's gaze a little: sideways (yaw) up to maxFollowAngle and
 // up/down (pitch) up to maxPitchAngle from the player->object direction, never so close sideways that it covers the object.
 // Distance: while the menu is open, pushing either thumbstick forward / back moves it farther / closer
-// (remembered for the next menu).
+// (saved as Settings > Menu > Distance).
+//
+// The follow angles, the distance and the button side switch come from the settings menu (AppSettings).
 //
 // The prefab is built by SteelArm > Build Radial Menu Prefabs (Assets/Editor/RadialMenuPrefabBuilder.cs).
 public class RadialMenu : MonoBehaviour
@@ -58,8 +60,6 @@ public class RadialMenu : MonoBehaviour
     public float followSpeed = 3f;
     [Tooltip("The menu follows the player's gaze up/down too, up to this angle (degrees) from the object's direction. 0 = off.")]
     public float maxPitchAngle = 15f;
-    [Tooltip("Distance from the player the menu starts at (meters); it is never placed behind the object.")]
-    public float preferredDistance = 0.55f;
     [Tooltip("At least this much closer to the player than the object (meters).")]
     public float inFrontOfObject = 0.15f;
     public float minDistance = 0.3f;
@@ -86,11 +86,12 @@ public class RadialMenu : MonoBehaviour
     const int DotSegments = 16;
 
     static Material s_LineMaterial;
-    static float s_DistanceAdjust;                                   // thumbstick change, kept for the next menu
 
     InputAction leftStick;
     InputAction rightStick;
     float pitch;
+    float currentDistance = -1f;    // distance actually used (the setting may be farther than the object allows)
+    bool distanceChanged;           // moved with the thumbstick; saved when released
 
     MenuTarget target;
     Transform head;
@@ -113,6 +114,7 @@ public class RadialMenu : MonoBehaviour
     public void Open(MenuTarget menuTarget)
     {
         target = menuTarget;
+        ReadSettings();
         head = Camera.main != null ? Camera.main.transform : null;
         var canvas = GetComponent<Canvas>();
         if (canvas != null && canvas.worldCamera == null)
@@ -156,13 +158,24 @@ public class RadialMenu : MonoBehaviour
         StartCoroutine(CloseAnimation());
     }
 
+    void ReadSettings()
+    {
+        AppSettings s = AppSettings.Current;
+        maxFollowAngle = s.menuYawAngle;
+        maxPitchAngle = s.menuPitchAngle;
+        mirrorTowardObject = s.menuMirror;
+    }
+
     void FillInfo()
     {
         nameText.text = target.name;
-        infoText.text = $"Confidence {target.confidence:0.00}";
+        infoText.text = Loc.F("menu.confidence", target.confidence);
         int count = target.Registered ? target.actions.Length : 0;
-        statusText.text = target.Registered ? (count == 1 ? "1 action" : $"{count} actions") : "No actions";
-        statusText.color = target.Registered ? Color.green : Color.red;
+        statusText.text = !target.Registered ? Loc.T("menu.noActions")
+            : count == 1 ? Loc.T("menu.action1") : Loc.F("menu.actions", count);
+        statusText.color = target.color;
+        Loc.ApplyFont(infoText);
+        Loc.ApplyFont(statusText);
     }
 
     void BuildButtons()
@@ -246,6 +259,7 @@ public class RadialMenu : MonoBehaviour
             head = Camera.main.transform;
         }
 
+        ReadSettings();
         float follow = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         yaw = Mathf.Lerp(yaw, TargetYaw(), follow);
         pitch = Mathf.Lerp(pitch, TargetPitch(), follow);
@@ -304,15 +318,13 @@ public class RadialMenu : MonoBehaviour
         return Mathf.Atan2(toObject.y, Flat(toObject).magnitude) * Mathf.Rad2Deg;
     }
 
-    // Menu distance from the player (horizontal): the preferred distance plus the thumbstick change,
-    // never closer than minDistance and never at or behind the object.
+    // Menu distance from the player (horizontal): the distance setting, never closer than minDistance
+    // and never at or behind the object.
     float MenuDistance(float flatDistance)
     {
-        float baseDistance = Mathf.Min(flatDistance - inFrontOfObject, preferredDistance);
         float farthest = Mathf.Max(minDistance, Mathf.Min(maxDistance, flatDistance - 0.05f));
-        float distance = Mathf.Clamp(baseDistance + s_DistanceAdjust, minDistance, farthest);
-        s_DistanceAdjust = distance - baseDistance; // don't wind up past the limits
-        return distance;
+        float wanted = Mathf.Min(AppSettings.Current.menuDistance, flatDistance - inFrontOfObject);
+        return Mathf.Clamp(wanted, minDistance, farthest);
     }
 
     void PlaceMenu()
@@ -324,6 +336,7 @@ public class RadialMenu : MonoBehaviour
 
         Vector3 direction = Quaternion.AngleAxis(yaw, Vector3.up) * (toObject / flatDistance);
         float distance = MenuDistance(flatDistance);
+        currentDistance = distance;
         float elevation = Mathf.Clamp(ObjectElevation() + pitch, -60f, 60f);
         Vector3 position = head.position + direction * distance;
         position.y = head.position.y + Mathf.Tan(elevation * Mathf.Deg2Rad) * distance + heightOffset;
@@ -352,8 +365,24 @@ public class RadialMenu : MonoBehaviour
     void AdjustDistanceWithStick()
     {
         float input = StickInput(leftStick) + StickInput(rightStick);
-        if (input != 0f)
-            s_DistanceAdjust += input * stickDistanceSpeed * Time.deltaTime; // clamped in MenuDistance
+        if (input != 0f && currentDistance > 0f)
+        {
+            // Starts from the distance in use, so pushing past what the object allows doesn't wind up.
+            AppSettings.Current.menuDistance = Mathf.Clamp(currentDistance + input * stickDistanceSpeed * Time.deltaTime, minDistance, maxDistance);
+            distanceChanged = true;
+        }
+        else if (distanceChanged)
+        {
+            SaveDistance();
+        }
+    }
+
+    void SaveDistance()
+    {
+        if (!distanceChanged)
+            return;
+        distanceChanged = false;
+        AppSettings.NotifyChanged(); // saves it and updates the settings menu
     }
 
     // Forward / back on one thumbstick (0 inside the dead zone or for mostly sideways pushes).
@@ -367,6 +396,7 @@ public class RadialMenu : MonoBehaviour
 
     void OnDestroy()
     {
+        SaveDistance();
         leftStick?.Dispose();
         rightStick?.Dispose();
     }

@@ -52,6 +52,13 @@ public class MenuButtonVisual : MonoBehaviour, IPointerEnterHandler, IPointerExi
             label.text = text;
     }
 
+    public void SetNormalColors(Color normal, Color contentNormal)
+    {
+        normalColor = normal;
+        contentColor = contentNormal;
+        Apply();
+    }
+
     public void SetHoverColors(Color hover, Color contentOnHover)
     {
         hoverColor = hover;
