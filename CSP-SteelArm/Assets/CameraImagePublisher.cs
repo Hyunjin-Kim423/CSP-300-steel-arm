@@ -18,6 +18,7 @@ public class CameraImagePublisher : MonoBehaviour
     {
         public Pose cameraPose;
         public Vector2Int imageSize;
+        public float angularSpeed;   // how fast the camera turned since the previous sent frame (deg/s; 0 = unknown)
     }
 
     const int k_MaxRememberedFrames = 30;
@@ -34,6 +35,8 @@ public class CameraImagePublisher : MonoBehaviour
     bool readbackPending;
     int pendingScanFrames;
     long lastScanTicks = -1;
+    long lastSentTicks = -1;
+    Quaternion lastSentRotation;
 
     readonly Dictionary<long, FrameInfo> recentFrames = new Dictionary<long, FrameInfo>();
     readonly Queue<long> recentFrameOrder = new Queue<long>();
@@ -121,7 +124,18 @@ public class CameraImagePublisher : MonoBehaviour
             }
         }
 
-        RememberFrame(ticks, new FrameInfo { cameraPose = cameraPose, imageSize = new Vector2Int(dstWidth, dstHeight) });
+        // Head turn rate between this frame and the previous one sent: results of fast-turning frames are not used to measure.
+        float angularSpeed = 0f;
+        if (lastSentTicks > 0 && ticks > lastSentTicks)
+        {
+            float dt = (ticks - lastSentTicks) / (float)TimeSpan.TicksPerSecond;
+            if (dt < 1f)
+                angularSpeed = Quaternion.Angle(lastSentRotation, cameraPose.rotation) / dt;
+        }
+        lastSentTicks = ticks;
+        lastSentRotation = cameraPose.rotation;
+
+        RememberFrame(ticks, new FrameInfo { cameraPose = cameraPose, imageSize = new Vector2Int(dstWidth, dstHeight), angularSpeed = angularSpeed });
 
         var msg = new ImageMsg
         {

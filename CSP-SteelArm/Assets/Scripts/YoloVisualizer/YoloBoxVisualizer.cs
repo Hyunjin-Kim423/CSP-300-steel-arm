@@ -6,42 +6,98 @@ using RosMessageTypes.Yolo;
 using UnityEngine.XR.Interaction.Toolkit.Interactors;
 using EnvironmentRaycastManager = Meta.XR.EnvironmentRaycastManager;
 
-// Shows the objects YOLO finds in the passthrough camera image and lets the user pick one.
+// Shows the objects YOLO finds in the passthrough camera image, fixed in the world, and lets the user pick one.
 //
-//   1. Get results   Scan mode: A / X sends one camera frame, the result stays fixed in place.
-//                    Live mode: frames are sent continuously; /yolo/tracking is preferred, /yolo/detections is the fallback.
-//   2. Place them    Each detection is placed in the world at the depth measured at its box center,
-//                    as a white outline (segmentation silhouette, or the bounding box).
-//   3. Interact      The object a controller points at is filled (green: in yolo_dectection_list.json, red: not);
-//                    the trigger opens its menu and label.
+// Every object is a gravity-aligned box (ObjectCube) placed in WORLD space. The box does not follow the head: turning
+// the head or walking around only changes the view. It is moved only when YOLO shows that the real object moved.
+// The box is used for matching; what is DRAWN is (drawStyle):
+//   Silhouette  the object's outline, anchored at the box's front face. Its position never changes with the view;
+//               only its shape is refined: every matched mask is moved into the anchor's frame (with that image's
+//               camera pose) and averaged (ObjectSilhouette). Resting objects average strongly, moving ones follow fast.
+//   Box         the wireframe box.
 //
-// Helpers (Assets/Script/YoloVisualizer):
-//   DetectedObject / DetectedObjectPool   one drawn object and the pool that reuses them
-//   MaskOutline                           mask point list -> clean outlines
-//   Polygon2D                             fill triangulation, point-in-outline
-//   ScanFrame                             image position -> world position for one camera frame
-//   ControllerInput                       buttons, aim ray, "is this hand on the UI?"
-//   ObjectLabel                           "cup 0.87" text
+// For every YOLO result (live mode: every message, scan mode: the one scan frame):
+//   1. Project   every box is drawn into that camera image, using the camera pose of the moment the image was taken
+//   2. Match     a result belongs to a box of the same class when they overlap (IoU >= matchIoU).
+//                A yolo_ros track id (/yolo/tracking, if used) is trusted first, but is not needed:
+//                matching works with /yolo/detections alone, and head movement does not disturb it.
+//   3. Update    matched + still overlapping (IoU >= stillIoU)  -> nothing to do, no depth rays (most results)
+//                matched but off for moveConfirmCount results     -> measure again with depth rays, filter, move
+//                not matched                                      -> new tentative object; shown once seen confirmHits times
+//                box in view but not found for lostMisses results -> removed (boxes out of view are kept)
+//                every matched result also adds its mask to the object's silhouette (no depth rays needed)
+//   4. Draw      each frame the drawn object eases to its box; the pointed one is highlighted, the trigger opens its menu.
+//
+// Measuring an object: a few depth rays inside its YOLO box (inside the mask if a -seg model sends one), median depth
+// = front face; width / height from the YOLO box at that depth; front-to-back depth guessed from the width.
+// Depth is measured only when an object is new or has moved, never just to redraw it.
+//
+// The old per-message silhouette code (DetectedObject, DetectedObjectPool) is still in the project but unused.
 [RequireComponent(typeof(CameraImagePublisher))]
 public class YoloBoxVisualizer : MonoBehaviour
 {
-    public enum HighlightStyle
-    {
-        [Tooltip("Bounding boxes only.")]
-        BoundingBox,
-        [Tooltip("Segmentation outlines (needs a -seg model, e.g. yolov8n-seg.pt). Falls back to the box when a detection has no mask.")]
-        Silhouette
-    }
-
     // ===================== Inspector =====================
 
-    [Header("Scan")]
-    [Tooltip("Scan only when A (right) or X (left) is pressed and keep the result fixed in place. Off = live scanning.")]
-    public bool scanOnButton = true;
-    [Tooltip("A new scan replaces only the objects currently in view; objects elsewhere stay. Off = a scan replaces everything.")]
-    public bool replaceOnlyInView = true;
+    [Header("Mode")]
+    [Tooltip("Live: camera frames are sent continuously and the boxes are kept up to date. Off = scan mode: A / X sends one frame.")]
+    public bool liveMode = true;
 
-    [Header("Scan effect")]
+    [Header("Topics")]
+    [Tooltip("Untracked detections. Used in scan mode, when 'Use Tracking' is off, and while the tracking topic is silent.")]
+    public string topicName = "/yolo/detections";
+    [Tooltip("Live mode: also listen to the yolo_ros tracking topic and use its track ids to help matching (not required).")]
+    public bool useTracking = true;
+    public string trackingTopicName = "/yolo/tracking";
+    [Tooltip("If the tracking topic sends nothing for this many seconds, the detections topic is used instead.")]
+    public float trackingFallbackTimeout = 1.5f;
+
+    [Header("Matching")]
+    [Tooltip("A result and a box are the same object when the box, drawn into that camera image, overlaps the result at least this much (IoU 0-1).")]
+    [Range(0.01f, 1f)] public float matchIoU = 0.15f;
+    [Tooltip("Overlap at or above this means the object has not moved: the box is left alone (no depth rays).")]
+    [Range(0.05f, 1f)] public float stillIoU = 0.4f;
+    [Tooltip("Results in a row that must disagree with a box before it is measured again (it moved).")]
+    public int moveConfirmCount = 2;
+    [Tooltip("Live: a new object must be seen in this many results before its box is shown.")]
+    public int confirmHits = 3;
+    [Tooltip("Live: a new object that is not confirmed within this many seconds is dropped.")]
+    public float tentativeTimeout = 1.0f;
+    [Tooltip("Live: a box that is in view but not found in this many results in a row is removed. Boxes out of view are kept.")]
+    public int lostMisses = 10;
+    [Tooltip("Before counting a box as 'not found', check with one depth ray whether something is in front of it (e.g. a hand).")]
+    public bool occlusionCheck = true;
+    [Tooltip("Trust yolo_ros track ids first when matching (only with Use Tracking).")]
+    public bool useTrackIds = true;
+    [Tooltip("How far ahead (seconds) a moving box may be predicted when matching.")]
+    public float maxPrediction = 0.3f;
+
+    [Header("Measuring (depth rays)")]
+    [Tooltip("Depth rays per measurement in live mode (the median is used).")]
+    public int liveRays = 9;
+    [Tooltip("Depth rays per object in scan mode (measured once, so more are affordable).")]
+    public int scanRays = 25;
+    [Tooltip("Aim the rays inside the segmentation mask (if YOLO sends one) so they hit the object, not the background.")]
+    public bool raysInsideMask = true;
+    [Tooltip("Depth (meters) used when no ray hits.")]
+    public float fallbackDistance = 1.0f;
+    [Tooltip("Front-to-back depth of a new box as a fraction of its width (the camera only sees the front).")]
+    public float depthPerWidth = 1.0f;
+    public float minBoxDepth = 0.05f;
+    public float maxBoxDepth = 1.0f;
+    [Tooltip("Live: no measurements from frames taken while the head turned faster than this (deg/s).")]
+    public float maxHeadSpeed = 90f;
+
+    [Header("Smoothing")]
+    [Tooltip("Measured moves smaller than this (meters) are ignored, so a resting box stays perfectly still.")]
+    public float deadband = 0.02f;
+    [Tooltip("One Euro filter, smoothing while nearly still (Hz). Lower = steadier, more lag.")]
+    public float minCutoff = 1.0f;
+    [Tooltip("One Euro filter, how much fast moves relax the smoothing. Higher = less lag.")]
+    public float beta = 2.0f;
+    [Tooltip("How fast the drawn box eases to the box. Higher = snappier.")]
+    public float followSpeed = 10f;
+
+    [Header("Scan mode")]
     [Tooltip("Play a wave over the real surfaces when scanning (ScanWaveEffect, uses the headset's depth).")]
     public bool scanWave = true;
     [Tooltip("Scan presses closer together than this (seconds) are ignored.")]
@@ -50,51 +106,46 @@ public class YoloBoxVisualizer : MonoBehaviour
     public float waitingWaveInterval = 1.2f;
     [Tooltip("Stop waiting for a scan result after this many seconds.")]
     public float scanResultTimeout = 5f;
-    [Tooltip("New outlines flash in this color when a scan result arrives.")]
-    public Color flashColor = new Color(0.55f, 0.9f, 1f, 1f);
-    public float flashDuration = 0.5f;
 
-    [Tooltip("Untracked detections topic. Used in scan mode, when 'Use Tracking' is off, and as a fallback while the tracking topic is silent.")]
-    public string topicName = "/yolo/detections";
+    public enum DrawStyle
+    {
+        [Tooltip("The object's outline from the segmentation masks (needs a -seg model; without masks the YOLO box is used as the shape).")]
+        Silhouette,
+        [Tooltip("The wireframe box used for matching.")]
+        Box
+    }
 
-    [Header("Tracking & smoothing (live mode)")]
-    [Tooltip("Subscribe to the yolo_ros tracking topic so each object keeps an id across frames (needed for smoothing).")]
-    public bool useTracking = true;
-    public string trackingTopicName = "/yolo/tracking";
-    [Tooltip("If the tracking topic sends nothing for this many seconds, results from the detections topic are used instead (e.g. the tracking node crashed). Tracking takes over again as soon as it sends.")]
-    public float trackingFallbackTimeout = 1.5f;
-    [Tooltip("How fast the drawn outline follows each new YOLO result. Higher = snappier, lower = smoother.")]
-    public float followSpeed = 8f;
-    [Tooltip("Weight of a new depth measurement (0-1). Lower = steadier distance, slower to react.")]
-    [Range(0.05f, 1f)] public float depthSmoothing = 0.35f;
-    [Tooltip("A tracked object that stops appearing in the results is hidden after this many seconds.")]
-    public float lostTrackTimeout = 1.5f;
-
-    [Header("Placement")]
-    [Tooltip("Depth (meters) used when the environment depth raycast misses.")]
-    public float fallbackDistance = 1.0f;
-    public float lineWidth = 0.004f;
+    [Header("Silhouette")]
+    public DrawStyle drawStyle = DrawStyle.Silhouette;
+    [Tooltip("Weight of a new mask while the object rests (0-1). Lower = steadier shape, slower to change.")]
+    [Range(0.05f, 1f)] public float shapeSmoothing = 0.25f;
+    [Tooltip("Weight of a new mask while the object seems to move (it disagrees with its box).")]
+    [Range(0.05f, 1f)] public float movingShapeWeight = 0.7f;
+    [Tooltip("At this speed (m/s) or faster the newest mask is used as it is (no averaging).")]
+    public float fastShapeSpeed = 0.5f;
+    [Tooltip("If the view direction to an object jumps by more than this (degrees) between two masks, its average starts over.")]
+    public float viewResetAngle = 40f;
 
     [Header("Look")]
-    public HighlightStyle highlightStyle = HighlightStyle.Silhouette;
-    [Tooltip("Outline color for every detected object.")]
     public Color outlineColor = Color.white;
-    [Tooltip("Fill color of the pointed object when it is listed in yolo_dectection_list.json (it has robot actions).")]
+    [Tooltip("Color of the pointed box when it is listed in yolo_dectection_list.json (it has robot actions).")]
     public Color boxColor = Color.green;
-    [Tooltip("Fill color of the pointed object when it is NOT in yolo_dectection_list.json.")]
+    [Tooltip("Color of the pointed box when it is NOT in yolo_dectection_list.json.")]
     public Color unregisteredColor = Color.red;
-    [Tooltip("Opacity of the pointed object's fill.")]
-    [Range(0f, 1f)] public float fillAlpha = 0.35f;
-    [Tooltip("Outline points per object (shared across its regions; at least 12 per region).")]
-    public int maxMaskPoints = 80;
+    [Tooltip("Opacity of the pointed silhouette's fill.")]
+    [Range(0f, 1f)] public float fillAlpha = 0.2f;
+    public float lineWidth = 0.004f;
+    [Tooltip("New boxes flash in this color when they appear.")]
+    public Color flashColor = new Color(0.55f, 0.9f, 1f, 1f);
+    public float flashDuration = 0.5f;
+    [Tooltip("Live: all boxes are removed if no YOLO results arrive for this many seconds (0 = keep them).")]
+    public float clearWhenSilent = 3f;
 
-    [Header("Label")]
-    [Tooltip("Label text height in meters for an object 1 m away; scales with distance.")]
-    public float labelHeight = 0.03f;
-    [Tooltip("How long the label stays after pulling the trigger (seconds).")]
-    public float labelDuration = 3f;
-    [Tooltip("Live mode: everything is hidden if no new results arrive within this many seconds.")]
-    public float boxLifetime = 2f;
+    [Header("Debug")]
+    [Tooltip("Log boxes being added / moved / removed.")]
+    public bool logCubes = true;
+    [Tooltip("Log a summary every 5 s: results, measurements and depth rays (to check the cost).")]
+    public bool logStats = true;
 
     // ===================== State =====================
 
@@ -104,29 +155,44 @@ public class YoloBoxVisualizer : MonoBehaviour
     EnvironmentRaycastManager environmentRaycast;
     XROrigin xrOrigin;
     ControllerInput[] controllers;
-    Material registeredFillMaterial;
-    Material unregisteredFillMaterial;
-    DetectedObjectPool objects;
-    ObjectLabel label;
-    DetectedObject hovered;
-    float lastDetectionTime;
-    bool warnedNoMask;
+    Material lineMaterial;
+    Material registeredFill;
+    Material unregisteredFill;
+    readonly List<ObjectCube> cubes = new List<ObjectCube>();
+    ObjectCube hovered;
+    int nextSerial = 1;
     bool subscribed;
+    bool warnedNoMask;
+    float lastResultTime = -1f;
+    float lastTrackingTime = float.NegativeInfinity;
+    bool usingTracking;
 
     // Scan mode
-    int scanCount;
     long handledScanTicks = -1;
     ScanWaveEffect wave;
     float lastScanPress = float.NegativeInfinity;
     float scanPendingSince = -1f;   // < 0: no scan result expected
     float lastWaveTime;
 
-    // Live mode: which topic the shown objects come from
-    enum Source { None, Tracking, Detections }
-    Source currentSource = Source.None;
-    float lastTrackingTime = float.NegativeInfinity;
+    // Stats (logStats)
+    int statResults, statMeasures, statRays;
+    float statSince;
 
-    static readonly List<Vector2> s_Resampled = new List<Vector2>();
+    // Scratch (reused every result, no allocations)
+    struct Projection { public bool valid; public bool inView; public Rect rect; }
+    struct Pair { public int det; public int cube; public float iou; public float score; }
+    struct Measurement { public Vector3 front; public Vector3 forward; public float width; public float height; public float boxDepth; public bool hit; }
+    readonly List<Projection> projections = new List<Projection>();
+    readonly List<Pair> pairs = new List<Pair>();
+    readonly List<bool> detUsed = new List<bool>();
+    readonly List<bool> cubeUsed = new List<bool>();
+    readonly List<Vector2> candidates = new List<Vector2>();
+    readonly List<Vector2> samples = new List<Vector2>();
+    readonly List<float> depths = new List<float>();
+    readonly Vector3[] corners = new Vector3[8];
+    static readonly System.Comparison<Pair> s_ByScore = (a, b) => b.score.CompareTo(a.score);
+    static readonly List<Vector2> s_BoxRegion = new List<Vector2>();
+    static readonly List<List<Vector2>> s_BoxRegions = new List<List<Vector2>> { s_BoxRegion };
 
     // ===================== Unity lifecycle =====================
 
@@ -141,20 +207,17 @@ public class YoloBoxVisualizer : MonoBehaviour
     void Start()
     {
         publisher = GetComponent<CameraImagePublisher>();
-        publisher.continuousPublish = !scanOnButton; // scan mode: frames are only sent on request
+        publisher.continuousPublish = liveMode; // scan mode: frames are only sent on request
         xrOrigin = FindAnyObjectByType<XROrigin>();
         controllers = new[]
         {
             new ControllerInput("RightHand", InteractorHandedness.Right),
             new ControllerInput("LeftHand", InteractorHandedness.Left)
         };
-
-        var lineMaterial = new Material(Shader.Find("Sprites/Default"));
-        registeredFillMaterial = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(boxColor, fillAlpha) };
-        unregisteredFillMaterial = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(unregisteredColor, fillAlpha) };
-        objects = new DetectedObjectPool(lineMaterial, registeredFillMaterial, outlineColor, lineWidth);
-        label = new ObjectLabel(labelHeight, labelDuration, boxColor);
-        if (scanWave && !TryGetComponent(out wave))
+        lineMaterial = new Material(Shader.Find("Sprites/Default"));
+        registeredFill = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(boxColor, fillAlpha) };
+        unregisteredFill = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(unregisteredColor, fillAlpha) };
+        if (!liveMode && scanWave && !TryGetComponent(out wave))
             wave = gameObject.AddComponent<ScanWaveEffect>();
 
         if (EnvironmentRaycastManager.IsSupported)
@@ -164,6 +227,12 @@ public class YoloBoxVisualizer : MonoBehaviour
             if (environmentRaycast == null)
                 environmentRaycast = gameObject.AddComponent<EnvironmentRaycastManager>();
         }
+        else
+        {
+            Debug.LogWarning($"[steelarm] Environment depth is not supported; boxes are placed at {fallbackDistance} m.");
+        }
+        statSince = Time.time;
+        Debug.Log("[steelarm] YOLO objects: " + (liveMode ? "live mode" : "scan mode (A / X)"));
     }
 
     void OnDestroy()
@@ -176,50 +245,43 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void Update()
     {
-        if (scanOnButton)
+        if (!liveMode)
         {
             if (AnyScanPressed())
                 RequestScan();
             KeepWavingWhileWaiting();
         }
-        else
+        else if (clearWhenSilent > 0f && cubes.Count > 0 && lastResultTime >= 0f && Time.time - lastResultTime > clearWhenSilent)
         {
-            // Live mode: drop everything when results stop coming, and objects that stopped appearing.
-            if (Time.time - lastDetectionTime > boxLifetime)
-                objects.RemoveAll();
-            else
-                objects.RemoveWhere(obj => Time.time - obj.lastSeen > lostTrackTimeout);
+            Debug.LogWarning($"[steelarm] No YOLO results for {clearWhenSilent:0.#} s; removing all boxes. Is the YOLO node running?");
+            RemoveAll();
         }
-
-        label.Tick();
 
         float t = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
-        foreach (var obj in objects.Active)
-        {
-            obj.Animate(t);
-            obj.UpdateFlash(Time.time, flashDuration, flashColor, outlineColor, lineWidth);
-        }
+        Camera cam = Camera.main;
+        Vector3 head = cam != null ? cam.transform.position : Vector3.zero;
+        foreach (var cube in cubes)
+            cube.Animate(t, Time.time, head, outlineColor, lineWidth, flashColor, flashDuration);
 
         UpdateHover();
-
         foreach (var controller in controllers)
         {
             if (controller.SelectPressed && !controller.IsPointingAtUI())
                 Select(controller.AimRay(xrOrigin));
         }
+
+        LogStats();
     }
 
-    // ===================== 1. Get results =====================
+    // ===================== Getting results =====================
 
-    // Called once at start (StartWithControllerButton, or the CoachingUI Start button). Extra calls are ignored,
-    // so results are never subscribed twice.
+    // Called once at start (StartWithControllerButton, or the CoachingUI Start button). Extra calls are ignored.
     public void SubscribeROS()
     {
         if (subscribed)
             return;
         subscribed = true;
         var ros = ROSConnection.GetOrCreateInstance();
-        // Both topics are subscribed: tracking is preferred, detections keep things working if tracking stops.
         ros.Subscribe<DetectionArrayMsg>(topicName, OnUntrackedDetections);
         if (useTracking)
             ros.Subscribe<DetectionArrayMsg>(trackingTopicName, OnTrackedDetections);
@@ -228,42 +290,37 @@ public class YoloBoxVisualizer : MonoBehaviour
     void OnTrackedDetections(DetectionArrayMsg msg)
     {
         // A single scan frame gives the tracker nothing to track, so scan mode uses the plain detections.
-        if (scanOnButton)
+        if (!liveMode)
             return;
         lastTrackingTime = Time.time;
-        UseSource(Source.Tracking);
-        ShowResult(msg);
+        if (!usingTracking)
+        {
+            usingTracking = true;
+            Debug.Log($"[steelarm] Using '{trackingTopicName}' (track ids help matching).");
+        }
+        ProcessResult(msg, false);
     }
 
     void OnUntrackedDetections(DetectionArrayMsg msg)
     {
-        if (scanOnButton)
+        if (!liveMode)
         {
             OnScanResult(msg);
             return;
         }
-        // While tracking is alive its results win; the untracked copy of the same frame is ignored.
+        // While tracking is alive its results are used; the untracked copy of the same frame is ignored.
         if (useTracking && Time.time - lastTrackingTime < trackingFallbackTimeout)
             return;
-        UseSource(Source.Detections);
-        ShowResult(msg);
+        if (usingTracking)
+        {
+            usingTracking = false;
+            Debug.LogWarning($"[steelarm] No results on '{trackingTopicName}' for {trackingFallbackTimeout:0.0} s; using '{topicName}' (boxes are matched by position).");
+        }
+        // No need to start over: boxes are matched by position, not by track id.
+        ProcessResult(msg, false);
     }
 
-    void UseSource(Source source)
-    {
-        if (source == currentSource)
-            return;
-        // Object keys differ between the sources (track ids vs. list positions), so start over to avoid duplicates.
-        objects.RemoveAll();
-        if (currentSource != Source.None)
-        {
-            if (source == Source.Detections)
-                Debug.LogWarning($"[steelarm] No results on '{trackingTopicName}' for {trackingFallbackTimeout:0.0}s; using '{topicName}' (no tracking/smoothing). Is the tracking node running?");
-            else
-                Debug.Log($"[steelarm] '{trackingTopicName}' is sending again; using tracked results.");
-        }
-        currentSource = source;
-    }
+    // ===================== Scan mode =====================
 
     bool AnyScanPressed()
     {
@@ -277,15 +334,12 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void RequestScan()
     {
-        // Ignore rapid repeated presses.
         if (Time.time - lastScanPress < scanCooldown)
             return;
         lastScanPress = Time.time;
 
-        // The open menu belongs to the old scan; its object may be replaced, so close it first.
         if (ObjectMenuGenerator._instance != null)
             ObjectMenuGenerator._instance.CloseCurrent();
-        label.Hide();
 
         if (publisher.RequestScan())
         {
@@ -307,7 +361,6 @@ public class YoloBoxVisualizer : MonoBehaviour
             wave.Play(cam.transform.position);
     }
 
-    // The result is still on its way: send another wave now and then, so the player sees the scan is running.
     void KeepWavingWhileWaiting()
     {
         if (scanPendingSince < 0f)
@@ -322,174 +375,458 @@ public class YoloBoxVisualizer : MonoBehaviour
             PlayWave();
     }
 
-    // Builds fixed outlines from the result of the latest scan frame (other frames and duplicates are ignored).
+    // Only the result of the latest scan frame is used (other frames and duplicates are ignored).
     void OnScanResult(DetectionArrayMsg msg)
     {
         if (!publisher.IsScanFrame(msg.header.stamp, out long ticks) || ticks == handledScanTicks)
             return;
         handledScanTicks = ticks;
-        scanCount++;
-
-        // The new scan replaces what is in view (it was just scanned again), or everything.
-        Camera cam = Camera.main;
-        if (replaceOnlyInView && cam != null)
-            objects.RemoveWhere(obj => IsInView(cam, obj.Center));
-        else
-            objects.RemoveAll();
-
         scanPendingSince = -1f;
-        ShowResult(msg);
-
-        // The new outlines flash once as they appear.
-        string scanPrefix = $"s{scanCount}:";
-        foreach (var obj in objects.Active)
-        {
-            if (obj.key.StartsWith(scanPrefix))
-                obj.flashStart = Time.time;
-        }
-        Debug.Log($"[steelarm] Scan {scanCount}: {msg.detections.Length} object(s)");
+        ProcessResult(msg, true);
+        Debug.Log($"[steelarm] Scan: {msg.detections.Length} object(s), {CountVisible()} box(es) shown");
     }
 
-    static bool IsInView(Camera cam, Vector3 point)
-    {
-        Vector3 viewport = cam.WorldToViewportPoint(point);
-        return viewport.z > 0f && viewport.x >= 0f && viewport.x <= 1f && viewport.y >= 0f && viewport.y <= 1f;
-    }
+    // ===================== Matching results to boxes =====================
 
-    // ===================== 2. Place them =====================
-
-    void ShowResult(DetectionArrayMsg msg)
+    void ProcessResult(DetectionArrayMsg msg, bool scan)
     {
-        if (!publisher.CameraAccess.IsPlaying) return;
-        if (!publisher.TryGetFrame(msg.header.stamp, out var info)) return;
+        lastResultTime = Time.time;
+        statResults++;
+        if (!publisher.CameraAccess.IsPlaying)
+            return;
+        if (!publisher.TryGetFrame(msg.header.stamp, out var info))
+            return; // frame too old (not remembered any more)
+
         var frame = new ScanFrame(publisher.CameraAccess, info.cameraPose, info.imageSize);
+        float now = Time.time;
+        bool canMeasure = scan || info.angularSpeed <= maxHeadSpeed;
+        DetectionMsg[] detections = msg.detections;
 
-        bool anyMask = false;
-        for (int index = 0; index < msg.detections.Length; index++)
-            anyMask |= PlaceObject(msg.detections[index], index, frame);
+        // 1. Where every box appears in this image.
+        projections.Clear();
+        cubeUsed.Clear();
+        foreach (var cube in cubes)
+        {
+            projections.Add(Project(cube, frame, now));
+            cubeUsed.Add(false);
+        }
 
-        // Untracked live results (#n) only live for one message.
-        objects.RemoveWhere(obj => obj.key.StartsWith("#") && obj.lastSeen < Time.time);
-        lastDetectionTime = Time.time;
+        // 2. Candidate pairs (same class; overlap or same track id), best first.
+        pairs.Clear();
+        detUsed.Clear();
+        for (int i = 0; i < detections.Length; i++)
+        {
+            detUsed.Add(false);
+            DetectionMsg det = detections[i];
+            Rect detRect = DetectionRect(det, frame);
+            for (int j = 0; j < cubes.Count; j++)
+            {
+                ObjectCube cube = cubes[j];
+                if (cube.className != det.class_name)
+                    continue;
+                bool sameId = useTracking && useTrackIds && !string.IsNullOrEmpty(det.id) && det.id == cube.trackId;
+                float iou = projections[j].valid ? IoU(projections[j].rect, detRect) : 0f;
+                if (!sameId && iou < matchIoU)
+                    continue;
+                pairs.Add(new Pair { det = i, cube = j, iou = iou, score = (sameId ? 1f : 0f) + iou });
+            }
+        }
+        pairs.Sort(s_ByScore);
 
-        if (!warnedNoMask && highlightStyle == HighlightStyle.Silhouette && msg.detections.Length > 0 && !anyMask)
+        // 3. Greedy one-to-one assignment.
+        foreach (var pair in pairs)
+        {
+            if (detUsed[pair.det] || cubeUsed[pair.cube])
+                continue;
+            detUsed[pair.det] = true;
+            cubeUsed[pair.cube] = true;
+            UpdateMatched(cubes[pair.cube], detections[pair.det], pair.iou, frame, scan, canMeasure, now);
+        }
+
+        // 4. Boxes that should have been seen in this image but were not.
+        int oldCount = projections.Count;
+        for (int j = 0; j < oldCount; j++)
+        {
+            if (!cubeUsed[j] && projections[j].inView && !IsOccluded(cubes[j], frame))
+                cubes[j].misses++;
+        }
+
+        // 5. Results that match no box: new objects.
+        for (int i = 0; i < detections.Length; i++)
+        {
+            if (!detUsed[i])
+                CreateCube(detections[i], frame, scan, canMeasure, now);
+        }
+
+        // 6. Remove what is gone.
+        for (int j = cubes.Count - 1; j >= 0; j--)
+        {
+            if (ShouldRemove(cubes[j], scan, now))
+                RemoveAt(j, scan ? "not found in the new scan" : "not seen any more");
+        }
+    }
+
+    void UpdateMatched(ObjectCube cube, DetectionMsg det, float iou, ScanFrame frame, bool scan, bool canMeasure, float now)
+    {
+        cube.detection = det;
+        cube.trackId = det.id ?? "";
+        cube.hits++;
+        cube.misses = 0;
+        cube.lastSeen = now;
+
+        if (cube.state == ObjectCube.State.Tentative)
+        {
+            // Not shown yet: every sighting is measured and averaged for a good first placement.
+            if (canMeasure && Measure(det, frame, liveRays, out var m) && UsableDepth(m, false))
+                cube.AddSample(m.front + m.forward * (cube.size.z * 0.5f), new Vector3(m.width, m.height, cube.size.z));
+            if (cube.hits >= confirmHits)
+            {
+                Confirm(cube, now);
+                UpdateSilhouette(cube, det, frame, 1f);
+            }
+            return;
+        }
+
+        if (scan)
+        {
+            // A new scan of a known object refines its position (one measurement, no 'moved?' check needed).
+            if (Measure(det, frame, scanRays, out var m) && m.hit)
+                MoveCube(cube, m, now);
+            UpdateSilhouette(cube, det, frame, 0.5f);
+            return;
+        }
+
+        if (iou >= stillIoU)
+        {
+            // Agrees with the box: the object has not moved. Nothing to measure; the shape is averaged.
+            cube.moveStreak = 0;
+            cube.velocity *= 0.5f;
+            float speed01 = Mathf.InverseLerp(0f, Mathf.Max(0.01f, fastShapeSpeed), cube.velocity.magnitude);
+            UpdateSilhouette(cube, det, frame, Mathf.Lerp(shapeSmoothing, 1f, speed01));
+            return;
+        }
+
+        // Disagrees: measure again only when it keeps disagreeing (one off result is just YOLO noise).
+        cube.moveStreak++;
+        if (cube.moveStreak >= moveConfirmCount && canMeasure)
+        {
+            cube.moveStreak = 0;
+            if (Measure(det, frame, liveRays, out var moved) && moved.hit)
+                MoveCube(cube, moved, now);
+        }
+        // It may be moving: follow the newest mask closely instead of averaging it away.
+        UpdateSilhouette(cube, det, frame, movingShapeWeight);
+    }
+
+    // Adds a matched mask to the object's silhouette (no depth rays: the mask is moved to the object's fixed anchor).
+    void UpdateSilhouette(ObjectCube cube, DetectionMsg det, ScanFrame frame, float weight)
+    {
+        if (drawStyle != DrawStyle.Silhouette || !cube.Visible)
+            return;
+        cube.silhouette.AddMask(MaskRegions(det, frame), frame, cube.FrontCenter, weight, viewResetAngle);
+    }
+
+    // The mask outline(s) in viewport coordinates, or the YOLO box when there is no mask.
+    IReadOnlyList<List<Vector2>> MaskRegions(DetectionMsg det, ScanFrame frame)
+    {
+        var points = det.mask?.data;
+        if (points != null && points.Length >= 3)
+        {
+            var regions = MaskOutline.SplitIntoRegions(points, frame.imageWidth, frame.imageHeight);
+            if (regions.Count > 0)
+                return regions;
+        }
+        if (!warnedNoMask)
         {
             warnedNoMask = true;
-            Debug.LogWarning("[steelarm] YOLO results carry no masks; drawing boxes. Check that a -seg model is running.");
+            Debug.LogWarning("[steelarm] YOLO results carry no masks; silhouettes use the boxes. Check that a -seg model is running.");
         }
-
-        // Outlines changed: rebuild the hovered object's fill with the new shape.
-        if (hovered != null && hovered.active)
-            hovered.ShowFill(FillMaterialFor(hovered));
+        Rect r = DetectionRect(det, frame);
+        s_BoxRegion.Clear();
+        s_BoxRegion.Add(new Vector2(r.xMin, r.yMin));
+        s_BoxRegion.Add(new Vector2(r.xMax, r.yMin));
+        s_BoxRegion.Add(new Vector2(r.xMax, r.yMax));
+        s_BoxRegion.Add(new Vector2(r.xMin, r.yMax));
+        return s_BoxRegions;
     }
 
-    // Creates or updates the drawn object for one detection. Returns true when it got a mask outline.
-    bool PlaceObject(DetectionMsg det, int index, ScanFrame frame)
+    void MoveCube(ObjectCube cube, Measurement m, float now)
     {
-        // Scan mode: every scan gets its own keys, so earlier scans outside the view are kept.
-        // Live mode: tracked results carry a stable id; untracked ones are keyed by their position in the message.
-        string key = scanOnButton ? $"s{scanCount}:{index}"
-            : string.IsNullOrEmpty(det.id) ? "#" + index : det.id;
-        DetectedObject obj = objects.GetOrCreate(key, out bool isNew);
-        // Without a stable id (#n), index n can be a different object next time, so never blend those.
-        bool sameObject = !isNew && !key.StartsWith("#");
+        // Size and orientation stay as first measured; only the position follows the object.
+        Vector3 measuredCenter = m.front + m.forward * (cube.size.z * 0.5f);
+        if (cube.ApplyMeasurement(measuredCenter, now, deadband) && logCubes)
+            Debug.Log($"[steelarm] ~ {cube.className} #{cube.serial} moved to {Distance(cube.center):0.00} m");
+    }
 
-        // Bounding box in viewport coordinates.
+    void CreateCube(DetectionMsg det, ScanFrame frame, bool scan, bool canMeasure, float now)
+    {
+        if (!canMeasure)
+            return; // head turning fast: wait for a sharper frame
+        if (!Measure(det, frame, scan ? scanRays : liveRays, out var m) || !UsableDepth(m, scan))
+            return;
+
+        var cube = new ObjectCube(nextSerial++, det.class_name, lineMaterial)
+        {
+            detection = det,
+            trackId = det.id ?? "",
+            registered = RobotActionRegistry.GetActions(det.class_name) != null,
+            drawBox = drawStyle == DrawStyle.Box,
+            rotation = Quaternion.LookRotation(m.forward, Vector3.up),
+            createdTime = now,
+            lastSeen = now,
+            hits = 1
+        };
+        cube.AddSample(m.front + m.forward * (m.boxDepth * 0.5f), new Vector3(m.width, m.height, m.boxDepth));
+        cubes.Add(cube);
+        if (!m.hit)
+            Debug.LogWarning($"[steelarm] No depth for {det.class_name}; placed at {fallbackDistance} m.");
+        if (scan || cube.hits >= confirmHits)
+        {
+            Confirm(cube, now);
+            UpdateSilhouette(cube, det, frame, 1f);
+        }
+    }
+
+    // Live: a box placed without real depth (depth not ready yet, ray missed) would sit at fallbackDistance and,
+    // seen from the same spot, still overlap perfectly, so it would never be corrected. Wait for real depth instead.
+    // Scan mode has only this one result, so the fallback is used there (with a warning).
+    bool UsableDepth(Measurement m, bool scan) => m.hit || scan || environmentRaycast == null;
+
+    void Confirm(ObjectCube cube, float now)
+    {
+        cube.Confirm(now, minCutoff, beta);
+        if (logCubes)
+            Debug.Log($"[steelarm] + {cube.className} #{cube.serial} at {Distance(cube.center):0.00} m, size {cube.size.x:0.00} x {cube.size.y:0.00} x {cube.size.z:0.00} m");
+    }
+
+    bool ShouldRemove(ObjectCube cube, bool scan, float now)
+    {
+        if (cube.state == ObjectCube.State.Tentative)
+            return now - cube.createdTime > tentativeTimeout || cube.misses >= 2;
+        return cube.misses >= (scan ? 1 : lostMisses);
+    }
+
+    void RemoveAt(int index, string reason)
+    {
+        ObjectCube cube = cubes[index];
+        if (cube == hovered)
+            hovered = null;
+        if (logCubes && cube.Visible)
+            Debug.Log($"[steelarm] - {cube.className} #{cube.serial} ({reason})");
+        cube.Destroy();
+        cubes.RemoveAt(index);
+    }
+
+    void RemoveAll()
+    {
+        for (int j = cubes.Count - 1; j >= 0; j--)
+            RemoveAt(j, "cleared");
+    }
+
+    // ===================== Geometry =====================
+
+    // The box (at its predicted position) drawn into this camera image, as a viewport rectangle.
+    Projection Project(ObjectCube cube, ScanFrame frame, float now)
+    {
+        var p = new Projection();
+        Vector3 c = cube.PredictedCenter(now, maxPrediction);
+        ObjectCube.GetCorners(c, cube.size, cube.rotation, corners);
+        float xMin = float.MaxValue, yMin = float.MaxValue, xMax = float.MinValue, yMax = float.MinValue;
+        for (int k = 0; k < 8; k++)
+        {
+            if (!frame.WorldToViewport(corners[k], out Vector2 v))
+                return p; // partly behind the camera: not comparable, and not 'in view'
+            xMin = Mathf.Min(xMin, v.x); xMax = Mathf.Max(xMax, v.x);
+            yMin = Mathf.Min(yMin, v.y); yMax = Mathf.Max(yMax, v.y);
+        }
+        p.valid = true;
+        p.rect = Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+        // In view = its center is clearly inside the image (an object at the edge may be cut off and missed by YOLO).
+        const float margin = 0.05f;
+        p.inView = frame.WorldToViewport(c, out Vector2 vc)
+                   && vc.x > margin && vc.x < 1f - margin && vc.y > margin && vc.y < 1f - margin;
+        return p;
+    }
+
+    // Something (a hand, a person) is clearly in front of the box in this image.
+    bool IsOccluded(ObjectCube cube, ScanFrame frame)
+    {
+        if (!occlusionCheck || environmentRaycast == null)
+            return false;
+        if (!frame.WorldToViewport(cube.center, out Vector2 v))
+            return false;
+        Ray ray = frame.ViewportRay(v);
+        statRays++;
+        if (!environmentRaycast.Raycast(ray, out var hit))
+            return false;
+        float hitDepth = Vector3.Dot(hit.point - ray.origin, frame.forward);
+        float cubeDepth = Vector3.Dot(cube.center - ray.origin, frame.forward);
+        return hitDepth < cubeDepth - Mathf.Max(0.15f, cube.size.z);
+    }
+
+    Rect DetectionRect(DetectionMsg det, ScanFrame frame)
+    {
         var center = det.bbox.center.position;
         var size = det.bbox.size;
         Vector2 leftBottom = frame.PixelToViewport(center.x - size.x / 2, center.y + size.y / 2);
         Vector2 rightTop = frame.PixelToViewport(center.x + size.x / 2, center.y - size.y / 2);
-
-        // Distance, measured at the box center (blended with the previous value for the same object).
-        float depth = MeasureDepth(frame, (leftBottom + rightTop) / 2);
-        if (sameObject && obj.hasDepth)
-            depth = Mathf.Lerp(obj.depth, depth, depthSmoothing);
-        obj.depth = depth;
-        obj.hasDepth = true;
-
-        obj.targetCorners[0] = frame.ViewportToWorld(new Vector2(leftBottom.x, leftBottom.y), depth);
-        obj.targetCorners[1] = frame.ViewportToWorld(new Vector2(leftBottom.x, rightTop.y), depth);
-        obj.targetCorners[2] = frame.ViewportToWorld(new Vector2(rightTop.x, rightTop.y), depth);
-        obj.targetCorners[3] = frame.ViewportToWorld(new Vector2(rightTop.x, leftBottom.y), depth);
-
-        obj.detection = det;
-        obj.text = $"{det.class_name} {det.score:0.00}";
-        // Green if the object has robot actions in yolo_dectection_list.json, red otherwise.
-        obj.color = RobotActionRegistry.GetActions(det.class_name) != null ? boxColor : unregisteredColor;
-        obj.cameraPosition = frame.CameraPosition;
-        obj.lastSeen = Time.time;
-
-        // Outline: silhouette from the mask, or the bounding box.
-        bool hadMask = obj.hasMask;
-        int previousPartCount = obj.partCount;
-        obj.hasMask = highlightStyle == HighlightStyle.Silhouette && SetSilhouetteTarget(obj, det.mask, frame, depth);
-        if (!obj.hasMask)
-            SetBoxTarget(obj);
-
-        // New object or a different outline layout: jump to the new shape instead of morphing.
-        if (!sameObject || hadMask != obj.hasMask || previousPartCount != obj.partCount)
-            obj.SnapToTarget();
-        obj.ShowOutline();
-        return obj.hasMask;
+        return Rect.MinMaxRect(leftBottom.x, leftBottom.y, rightTop.x, rightTop.y);
     }
 
-    // Distance from the camera to the real surface seen at this viewport position (along the camera's optical axis).
-    float MeasureDepth(ScanFrame frame, Vector2 viewport)
+    static float IoU(Rect a, Rect b)
     {
-        Ray ray = frame.ViewportRay(viewport);
-        if (environmentRaycast != null && environmentRaycast.Raycast(ray, out var hit))
-            return Vector3.Dot(hit.point - ray.origin, frame.forward);
-        return fallbackDistance;
+        float w = Mathf.Min(a.xMax, b.xMax) - Mathf.Max(a.xMin, b.xMin);
+        float h = Mathf.Min(a.yMax, b.yMax) - Mathf.Max(a.yMin, b.yMin);
+        if (w <= 0f || h <= 0f)
+            return 0f;
+        float inter = w * h;
+        return inter / (a.width * a.height + b.width * b.height - inter);
     }
 
-    void SetBoxTarget(DetectedObject obj)
+    // Measures one detection: front face center, width and height (gravity-aligned), facing the camera horizontally.
+    bool Measure(DetectionMsg det, ScanFrame frame, int rayCount, out Measurement m)
     {
-        DetectedObject.SetTarget(objects.GetPart(obj, 0), (Vector3[])obj.targetCorners.Clone(), align: false);
-        obj.partCount = 1;
-    }
-
-    // One outline part per mask region, placed on the plane at the object's depth. Returns false without a usable mask.
-    bool SetSilhouetteTarget(DetectedObject obj, MaskMsg mask, ScanFrame frame, float depth)
-    {
-        var points = mask?.data;
-        if (points == null || points.Length < 3)
+        m = new Measurement();
+        Rect r = DetectionRect(det, frame);
+        if (r.width <= 0f || r.height <= 0f)
             return false;
+        statMeasures++;
 
-        var regions = MaskOutline.SplitIntoRegions(points, frame.imageWidth, frame.imageHeight);
-        if (regions.Count == 0)
-            return false;
-
-        // A fixed point count per region lets consecutive outlines be morphed point by point.
-        int pointsPerRegion = Mathf.Max(12, maxMaskPoints / regions.Count);
-        bool sameLayout = obj.hasMask && obj.partCount == regions.Count;
-        for (int r = 0; r < regions.Count; r++)
+        // Depth: median of rays inside the object.
+        BuildSamplePoints(det, frame, r, Mathf.Max(1, rayCount));
+        depths.Clear();
+        if (environmentRaycast != null)
         {
-            MaskOutline.Resample(regions[r], pointsPerRegion, s_Resampled);
-            var world = new Vector3[s_Resampled.Count];
-            for (int i = 0; i < world.Length; i++)
-                world[i] = frame.ViewportToWorld(s_Resampled[i], depth);
-            DetectedObject.SetTarget(objects.GetPart(obj, r), world, align: sameLayout);
+            foreach (var v in samples)
+            {
+                Ray ray = frame.ViewportRay(v);
+                statRays++;
+                if (environmentRaycast.Raycast(ray, out var hit))
+                {
+                    float d = Vector3.Dot(hit.point - ray.origin, frame.forward);
+                    if (d > 0.05f)
+                        depths.Add(d);
+                }
+            }
         }
-        obj.partCount = regions.Count;
+        m.hit = depths.Count > 0;
+        float front = m.hit ? Median(depths) : fallbackDistance;
+
+        // Horizontal facing direction and a gravity-aligned frame.
+        Vector3 forward = Vector3.ProjectOnPlane(frame.forward, Vector3.up);
+        if (forward.sqrMagnitude < 1e-4f)
+            forward = Vector3.ProjectOnPlane(frame.up, Vector3.up); // looking straight down / up
+        forward.Normalize();
+        Vector3 right = Vector3.Cross(Vector3.up, forward);
+
+        // The YOLO box at that depth; its extent along right / up gives width / height.
+        float rMin = float.MaxValue, rMax = float.MinValue, yMin = float.MaxValue, yMax = float.MinValue, fSum = 0f;
+        for (int k = 0; k < 4; k++)
+        {
+            var corner = new Vector2(k == 0 || k == 1 ? r.xMin : r.xMax, k == 0 || k == 3 ? r.yMin : r.yMax);
+            Vector3 p = frame.ViewportToWorld(corner, front);
+            float pr = Vector3.Dot(p, right);
+            rMin = Mathf.Min(rMin, pr); rMax = Mathf.Max(rMax, pr);
+            yMin = Mathf.Min(yMin, p.y); yMax = Mathf.Max(yMax, p.y);
+            fSum += Vector3.Dot(p, forward);
+        }
+
+        m.forward = forward;
+        m.width = Mathf.Max(0.03f, rMax - rMin);
+        m.height = Mathf.Max(0.03f, yMax - yMin);
+        m.boxDepth = Mathf.Clamp(m.width * depthPerWidth, minBoxDepth, maxBoxDepth);
+        m.front = right * ((rMin + rMax) * 0.5f) + forward * (fSum * 0.25f) + Vector3.up * ((yMin + yMax) * 0.5f);
         return true;
     }
 
-    // ===================== 3. Interact =====================
+    // Viewport points to aim the depth rays at: a grid over the middle of the YOLO box, kept inside the mask when
+    // there is one (so a chair's legs or a mug's handle area don't send rays to the wall behind).
+    void BuildSamplePoints(DetectionMsg det, ScanFrame frame, Rect r, int count)
+    {
+        candidates.Clear();
+        samples.Clear();
+        int grid = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(count * 2f)));
+        const float inset = 0.15f;
+        for (int gy = 0; gy < grid; gy++)
+        {
+            for (int gx = 0; gx < grid; gx++)
+            {
+                float u = grid == 1 ? 0.5f : Mathf.Lerp(inset, 1f - inset, gx / (float)(grid - 1));
+                float w = grid == 1 ? 0.5f : Mathf.Lerp(inset, 1f - inset, gy / (float)(grid - 1));
+                candidates.Add(new Vector2(Mathf.Lerp(r.xMin, r.xMax, u), Mathf.Lerp(r.yMin, r.yMax, w)));
+            }
+        }
 
-    // Fills the object either controller points at (nearest hit wins). A hand whose XRI ray is on the UI
-    // (e.g. the object menu) is ignored, so the object behind the menu is not highlighted or selected.
+        var maskPoints = det.mask?.data;
+        if (raysInsideMask && maskPoints != null && maskPoints.Length >= 3)
+        {
+            var regions = MaskOutline.SplitIntoRegions(maskPoints, frame.imageWidth, frame.imageHeight);
+            foreach (var c in candidates)
+            {
+                foreach (var region in regions)
+                {
+                    if (Polygon2D.Contains(region, c))
+                    {
+                        samples.Add(c);
+                        break;
+                    }
+                }
+            }
+        }
+        if (samples.Count < 3)
+        {
+            samples.Clear();
+            samples.AddRange(candidates); // no (usable) mask: the whole grid
+        }
+
+        // Thin out evenly to the ray budget.
+        if (samples.Count > count)
+        {
+            candidates.Clear();
+            for (int k = 0; k < count; k++)
+                candidates.Add(samples[k * samples.Count / count]);
+            samples.Clear();
+            samples.AddRange(candidates);
+        }
+    }
+
+    static float Median(List<float> values)
+    {
+        values.Sort();
+        int n = values.Count;
+        return n % 2 == 1 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) * 0.5f;
+    }
+
+    float Distance(Vector3 point)
+    {
+        Camera cam = Camera.main;
+        return cam != null ? Vector3.Distance(cam.transform.position, point) : 0f;
+    }
+
+    int CountVisible()
+    {
+        int n = 0;
+        foreach (var cube in cubes)
+        {
+            if (cube.Visible)
+                n++;
+        }
+        return n;
+    }
+
+    // ===================== Interact =====================
+
+    // Highlights the box either controller points at (nearest hit wins). A hand whose XRI ray is on the UI
+    // (e.g. the object menu) is ignored.
     void UpdateHover()
     {
-        if (hovered != null && !hovered.active)
-            hovered = null;
-
-        DetectedObject pointed = null;
+        ObjectCube pointed = null;
         float nearest = float.MaxValue;
         foreach (var controller in controllers)
         {
             if (controller.IsPointingAtUI())
                 continue;
-            DetectedObject hit = FindPointedObject(controller.AimRay(xrOrigin), out float distance);
+            ObjectCube hit = FindPointedCube(controller.AimRay(xrOrigin), out float distance);
             if (hit != null && distance < nearest)
             {
                 pointed = hit;
@@ -499,41 +836,49 @@ public class YoloBoxVisualizer : MonoBehaviour
 
         if (pointed != hovered)
         {
-            hovered?.HideFill();
+            hovered?.SetHighlight(false, outlineColor);
             hovered = pointed;
-            hovered?.ShowFill(FillMaterialFor(hovered));
+            hovered?.SetHighlight(true, ColorFor(hovered), hovered.registered ? registeredFill : unregisteredFill);
         }
-        hovered?.UpdateFill();
     }
 
     void Select(Ray ray)
     {
-        DetectedObject pointed = FindPointedObject(ray, out _);
-        if (pointed == null)
-        {
-            // label.Hide();
+        ObjectCube pointed = FindPointedCube(ray, out _);
+        if (pointed == null || ObjectMenuGenerator._instance == null)
             return;
-        }
-        ObjectMenuGenerator._instance.Open(MenuTarget.From(pointed));
-        // label.Show(pointed);
+        ObjectMenuGenerator._instance.Open(MenuTarget.From(pointed, ColorFor(pointed)));
     }
 
-    DetectedObject FindPointedObject(Ray ray, out float nearest)
+    ObjectCube FindPointedCube(Ray ray, out float nearest)
     {
-        DetectedObject pointed = null;
+        ObjectCube pointed = null;
         nearest = float.MaxValue;
-        foreach (var obj in objects.Active)
+        foreach (var cube in cubes)
         {
-            if (obj.TryHit(ray, out float distance) && distance < nearest)
+            if (cube.TryHit(ray, out float distance) && distance < nearest)
             {
-                pointed = obj;
+                pointed = cube;
                 nearest = distance;
             }
         }
         return pointed;
     }
 
-    Material FillMaterialFor(DetectedObject obj) => obj.color == boxColor ? registeredFillMaterial : unregisteredFillMaterial;
+    Color ColorFor(ObjectCube cube) => cube.registered ? boxColor : unregisteredColor;
 
     static Color WithAlpha(Color c, float a) => new Color(c.r, c.g, c.b, a);
+
+    // ===================== Debug =====================
+
+    void LogStats()
+    {
+        if (!logStats || Time.time - statSince < 5f)
+            return;
+        float seconds = Time.time - statSince;
+        int tentative = cubes.Count - CountVisible();
+        Debug.Log($"[steelarm] boxes: {CountVisible()} shown, {tentative} tentative | last {seconds:0} s: {statResults} results, {statMeasures} measurements, {statRays} depth rays ({statRays / seconds:0} rays/s)");
+        statResults = statMeasures = statRays = 0;
+        statSince = Time.time;
+    }
 }

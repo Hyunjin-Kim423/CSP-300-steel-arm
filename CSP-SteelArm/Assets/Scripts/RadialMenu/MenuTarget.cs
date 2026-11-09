@@ -34,4 +34,34 @@ public class MenuTarget
             detection = obj.detection
         };
     }
+
+    // An object from the cube visualizer (its silhouette, or its box). color: its highlight color (registered / not).
+    public static MenuTarget From(ObjectCube cube, Color color)
+    {
+        var target = new MenuTarget
+        {
+            name = cube.detection.class_name,
+            confidence = (float)cube.detection.score,
+            actions = RobotActionRegistry.GetActions(cube.detection.class_name),
+            color = color,
+            detection = cube.detection
+        };
+        if (!cube.drawBox && cube.silhouette.HasShape)
+        {
+            var outline = new List<Vector3>();
+            cube.silhouette.GetWorldOutline(outline);
+            target.center = cube.silhouette.Position;
+            target.halfWidth = cube.silhouette.HalfWidth;
+            target.outline = outline.ToArray();
+        }
+        else
+        {
+            var corners = new Vector3[8];
+            cube.GetDrawnCorners(corners);
+            target.center = cube.DrawnCenter;
+            target.halfWidth = cube.DrawnSize.x * 0.5f;
+            target.outline = corners;
+        }
+        return target;
+    }
 }
