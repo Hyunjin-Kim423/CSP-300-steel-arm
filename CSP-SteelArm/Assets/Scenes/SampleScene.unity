@@ -768,7 +768,7 @@ MonoBehaviour:
   cameraAccess: {fileID: 529913395}
   topicName: /camera/rgb/image_raw
   continuousPublish: 1
-  publishRateHz: 10
+  publishRateHz: 20
   downsampleFactor: 2
 --- !u!114 &529913395 stripped
 MonoBehaviour:
@@ -793,32 +793,57 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: af1f6ee779ce4279ad1513e0d3b42dd8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::YoloBoxVisualizer
-  scanOnButton: 1
-  replaceOnlyInView: 1
-  scanWave: 1
-  scanCooldown: 0.4
-  waitingWaveInterval: 1.2
-  scanResultTimeout: 5
-  flashColor: {r: 0.55, g: 0.9, b: 1, a: 1}
-  flashDuration: 0.5
+  liveMode: 1
   topicName: /yolo/detections
   useTracking: 0
   trackingTopicName: /yolo/tracking
   trackingFallbackTimeout: 1.5
-  followSpeed: 10
-  depthSmoothing: 0.35
-  lostTrackTimeout: 1.5
+  matchIoU: 0.15
+  stillIoU: 0.4
+  confirmHits: 3
+  tentativeTimeout: 1
+  lostMisses: 4
+  unseenTimeout: 10
+  occlusionCheck: 1
+  useTrackIds: 1
+  maxPrediction: 0.3
+  liveRays: 9
+  scanRays: 25
+  raysInsideMask: 1
   fallbackDistance: 1
-  lineWidth: 0.004
-  highlightStyle: 1
+  depthPerWidth: 1
+  minBoxDepth: 0.05
+  maxBoxDepth: 1
+  maxHeadSpeed: 90
+  deadband: 0.02
+  jumpDistance: 0.3
+  jumpRatio: 0.25
+  jumpConfirmCount: 2
+  sizeSmoothing: 0.3
+  renderPrediction: 0.1
+  minCutoff: 0.5
+  beta: 2
+  followSpeed: 10
+  scanWave: 1
+  scanCooldown: 0.4
+  waitingWaveInterval: 1.2
+  scanResultTimeout: 5
+  drawStyle: 0
+  shapeTimeConstant: 0.35
+  movingShapeTimeConstant: 0.08
+  fastShapeSpeed: 0.5
+  outlineBlur: 1
+  viewResetAngle: 40
   outlineColor: {r: 1, g: 1, b: 1, a: 1}
   boxColor: {r: 0, g: 1, b: 0, a: 1}
   unregisteredColor: {r: 1, g: 0, b: 0, a: 1}
-  fillAlpha: 0.1
-  maxMaskPoints: 40
-  labelHeight: 0.03
-  labelDuration: 3
-  boxLifetime: 2
+  fillAlpha: 0.2
+  lineWidth: 0.004
+  flashColor: {r: 0.55, g: 0.9, b: 1, a: 1}
+  flashDuration: 0.5
+  clearWhenSilent: 3
+  logCubes: 1
+  logStats: 1
 --- !u!1 &532264445 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 7158865763779469689, guid: 66d40221d132d04499855da9ce315f20, type: 3}

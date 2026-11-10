@@ -8,12 +8,14 @@ using EnvironmentRaycastManager = Meta.XR.EnvironmentRaycastManager;
 
 // Shows the objects YOLO finds in the passthrough camera image, fixed in the world, and lets the user pick one.
 //
-// Every object is a gravity-aligned box (ObjectCube) placed in WORLD space. The box does not follow the head: turning
-// the head or walking around only changes the view. It is moved only when YOLO shows that the real object moved.
+// Every object is a gravity-aligned box (ObjectCube) placed in WORLD space. The box does not follow the head: each
+// position is computed with the camera pose of the image it came from, so turning the head or walking around does not
+// move it. Live mode measures it again with depth rays on every result and filters the position, so it follows the
+// real object (people included) and corrects a bad measurement.
 // The box is used for matching; what is DRAWN is (drawStyle):
-//   Silhouette  the object's outline, anchored at the box's front face. Its position never changes with the view;
-//               only its shape is refined: every matched mask is moved into the anchor's frame (with that image's
-//               camera pose) and averaged (ObjectSilhouette). Resting objects average strongly, moving ones follow fast.
+//   Silhouette  the object's outline, anchored at the box's front face. Every matched mask is moved into the anchor's
+//               frame (with that image's camera pose) and averaged (ObjectSilhouette). Resting objects average
+//               strongly, moving ones follow the newest mask.
 //   Box         the wireframe box.
 //
 // For every YOLO result (live mode: every message, scan mode: the one scan frame):
@@ -21,16 +23,18 @@ using EnvironmentRaycastManager = Meta.XR.EnvironmentRaycastManager;
 //   2. Match     a result belongs to a box of the same class when they overlap (IoU >= matchIoU).
 //                A yolo_ros track id (/yolo/tracking, if used) is trusted first, but is not needed:
 //                matching works with /yolo/detections alone, and head movement does not disturb it.
-//   3. Update    matched + still overlapping (IoU >= stillIoU)  -> nothing to do, no depth rays (most results)
-//                matched but off for moveConfirmCount results     -> measure again with depth rays, filter, move
-//                not matched                                      -> new tentative object; shown once seen confirmHits times
-//                box in view but not found for lostMisses results -> removed (boxes out of view are kept)
+//   3. Update    matched (live)  -> measured again with depth rays EVERY result, filtered (One Euro) and moved, so the
+//                                   object follows the real one and a wrong first depth is corrected right away.
+//                                   A single far-off measurement is ignored (depth outlier); two in a row are a jump.
+//                matched (scan)  -> measured again, refines the position
+//                not matched     -> new tentative object; shown once seen confirmHits times
+//                in view but not found for lostMisses results -> removed; not seen at all for unseenTimeout -> removed
 //                every matched result also adds its mask to the object's silhouette (no depth rays needed)
 //   4. Draw      each frame the drawn object eases to its box; the pointed one is highlighted, the trigger opens its menu.
 //
 // Measuring an object: a few depth rays inside its YOLO box (inside the mask if a -seg model sends one), median depth
 // = front face; width / height from the YOLO box at that depth; front-to-back depth guessed from the width.
-// Depth is measured only when an object is new or has moved, never just to redraw it.
+// Scan mode measures once per scan; live mode measures every result (see 'depth rays' in the stats log for the cost).
 //
 // The old per-message silhouette code (DetectedObject, DetectedObjectPool) is still in the project but unused.
 [RequireComponent(typeof(CameraImagePublisher))]
@@ -51,19 +55,25 @@ public class YoloBoxVisualizer : MonoBehaviour
     [Tooltip("If the tracking topic sends nothing for this many seconds, the detections topic is used instead.")]
     public float trackingFallbackTimeout = 1.5f;
 
+    [Header("Confidence")]
+    [Tooltip("A NEW object needs a YOLO score of at least this (set the YOLO node's threshold lower, e.g. 0.3).")]
+    [Range(0f, 1f)] public float createScore = 0.5f;
+    [Tooltip("An object already shown is kept by results down to this score, so it does not flicker when YOLO is unsure.")]
+    [Range(0f, 1f)] public float keepScore = 0.3f;
+
     [Header("Matching")]
     [Tooltip("A result and a box are the same object when the box, drawn into that camera image, overlaps the result at least this much (IoU 0-1).")]
     [Range(0.01f, 1f)] public float matchIoU = 0.15f;
-    [Tooltip("Overlap at or above this means the object has not moved: the box is left alone (no depth rays).")]
+    [Tooltip("Overlap below this means the object is probably moving: its silhouette follows the newest mask closely.")]
     [Range(0.05f, 1f)] public float stillIoU = 0.4f;
-    [Tooltip("Results in a row that must disagree with a box before it is measured again (it moved).")]
-    public int moveConfirmCount = 2;
     [Tooltip("Live: a new object must be seen in this many results before its box is shown.")]
     public int confirmHits = 3;
     [Tooltip("Live: a new object that is not confirmed within this many seconds is dropped.")]
     public float tentativeTimeout = 1.0f;
-    [Tooltip("Live: a box that is in view but not found in this many results in a row is removed. Boxes out of view are kept.")]
+    [Tooltip("Live: a box that is in view but not found in this many results in a row is removed.")]
     public int lostMisses = 10;
+    [Tooltip("Live: an object not seen at all for this many seconds is removed, in view or not (0 = keep it).")]
+    public float unseenTimeout = 10f;
     [Tooltip("Before counting a box as 'not found', check with one depth ray whether something is in front of it (e.g. a hand).")]
     public bool occlusionCheck = true;
     [Tooltip("Trust yolo_ros track ids first when matching (only with Use Tracking).")]
@@ -88,8 +98,18 @@ public class YoloBoxVisualizer : MonoBehaviour
     public float maxHeadSpeed = 90f;
 
     [Header("Smoothing")]
-    [Tooltip("Measured moves smaller than this (meters) are ignored, so a resting box stays perfectly still.")]
-    public float deadband = 0.02f;
+    [Tooltip("Measured moves smaller than this (meters) are ignored, so a resting object stays perfectly still.")]
+    public float deadband = 0.01f;
+    [Tooltip("Live: a measurement farther than this (meters) from where the object should be is a possible depth outlier...")]
+    public float jumpDistance = 0.3f;
+    [Tooltip("...or farther than this fraction of its distance from the viewer, whichever is larger.")]
+    public float jumpRatio = 0.25f;
+    [Tooltip("Far-off measurements in a row before the object is moved there at once (a real jump, not an outlier).")]
+    public int jumpConfirmCount = 2;
+    [Tooltip("Live: how much each measurement changes the object's size and facing (0-1).")]
+    [Range(0.05f, 1f)] public float sizeSmoothing = 0.3f;
+    [Tooltip("Live: between results, draw objects this far (seconds) ahead along their velocity. 0 = off.")]
+    public float renderPrediction = 0.1f;
     [Tooltip("One Euro filter, smoothing while nearly still (Hz). Lower = steadier, more lag.")]
     public float minCutoff = 1.0f;
     [Tooltip("One Euro filter, how much fast moves relax the smoothing. Higher = less lag.")]
@@ -117,12 +137,15 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     [Header("Silhouette")]
     public DrawStyle drawStyle = DrawStyle.Silhouette;
-    [Tooltip("Weight of a new mask while the object rests (0-1). Lower = steadier shape, slower to change.")]
-    [Range(0.05f, 1f)] public float shapeSmoothing = 0.25f;
-    [Tooltip("Weight of a new mask while the object seems to move (it disagrees with its box).")]
-    [Range(0.05f, 1f)] public float movingShapeWeight = 0.7f;
+    [Tooltip("How long (seconds) the shape takes to follow a change while the object rests. Higher = steadier, slower.\n" +
+             "Per second, not per result: more results per second give a smoother shape with the same delay.")]
+    public float shapeTimeConstant = 0.35f;
+    [Tooltip("The same while the object seems to move (it disagrees with its box).")]
+    public float movingShapeTimeConstant = 0.08f;
     [Tooltip("At this speed (m/s) or faster the newest mask is used as it is (no averaging).")]
     public float fastShapeSpeed = 0.5f;
+    [Tooltip("Rounds off the outline: blur passes over the averaged mask before the outline is traced (0 = off).")]
+    [Range(0, 4)] public int outlineBlur = 1;
     [Tooltip("If the view direction to an object jumps by more than this (degrees) between two masks, its average starts over.")]
     public float viewResetAngle = 40f;
 
@@ -135,6 +158,12 @@ public class YoloBoxVisualizer : MonoBehaviour
     [Tooltip("Opacity of the pointed silhouette's fill.")]
     [Range(0f, 1f)] public float fillAlpha = 0.2f;
     public float lineWidth = 0.004f;
+    [Tooltip("Objects fade in when they appear and out when they are removed (seconds; 0 = off).")]
+    public float fadeDuration = 0.2f;
+    [Tooltip("Soft-edged lines (the edge fades out instead of a hard border).")]
+    public bool softLines = true;
+    [Tooltip("Soft lines look thinner; their width is multiplied by this.")]
+    public float softLineWidthScale = 1.8f;
     [Tooltip("New boxes flash in this color when they appear.")]
     public Color flashColor = new Color(0.55f, 0.9f, 1f, 1f);
     public float flashDuration = 0.5f;
@@ -159,6 +188,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     Material registeredFill;
     Material unregisteredFill;
     readonly List<ObjectCube> cubes = new List<ObjectCube>();
+    readonly List<ObjectCube> dying = new List<ObjectCube>();   // removed, fading out
     ObjectCube hovered;
     int nextSerial = 1;
     bool subscribed;
@@ -215,6 +245,8 @@ public class YoloBoxVisualizer : MonoBehaviour
             new ControllerInput("LeftHand", InteractorHandedness.Left)
         };
         lineMaterial = new Material(Shader.Find("Sprites/Default"));
+        if (softLines)
+            lineMaterial.mainTexture = CreateSoftLineTexture();
         registeredFill = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(boxColor, fillAlpha) };
         unregisteredFill = new Material(Shader.Find("Sprites/Default")) { color = WithAlpha(unregisteredColor, fillAlpha) };
         if (!liveMode && scanWave && !TryGetComponent(out wave))
@@ -260,8 +292,19 @@ public class YoloBoxVisualizer : MonoBehaviour
         float t = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
         Camera cam = Camera.main;
         Vector3 head = cam != null ? cam.transform.position : Vector3.zero;
+        float fadeStep = fadeDuration > 0f ? Time.deltaTime / fadeDuration : 1f;
+        float width = softLines ? lineWidth * softLineWidthScale : lineWidth;
         foreach (var cube in cubes)
-            cube.Animate(t, Time.time, head, outlineColor, lineWidth, flashColor, flashDuration);
+            cube.Animate(t, Time.time, head, outlineColor, width, flashColor, flashDuration, fadeStep);
+        for (int i = dying.Count - 1; i >= 0; i--)
+        {
+            dying[i].Animate(t, Time.time, head, outlineColor, width, flashColor, flashDuration, fadeStep);
+            if (dying[i].FadedOut)
+            {
+                dying[i].Destroy();
+                dying.RemoveAt(i);
+            }
+        }
 
         UpdateHover();
         foreach (var controller in controllers)
@@ -416,8 +459,13 @@ public class YoloBoxVisualizer : MonoBehaviour
         detUsed.Clear();
         for (int i = 0; i < detections.Length; i++)
         {
-            detUsed.Add(false);
             DetectionMsg det = detections[i];
+            if (det.score < keepScore)
+            {
+                detUsed.Add(true); // too unsure to use at all
+                continue;
+            }
+            detUsed.Add(false);
             Rect detRect = DetectionRect(det, frame);
             for (int j = 0; j < cubes.Count; j++)
             {
@@ -454,7 +502,7 @@ public class YoloBoxVisualizer : MonoBehaviour
         // 5. Results that match no box: new objects.
         for (int i = 0; i < detections.Length; i++)
         {
-            if (!detUsed[i])
+            if (!detUsed[i] && detections[i].score >= createScore)
                 CreateCube(detections[i], frame, scan, canMeasure, now);
         }
 
@@ -496,26 +544,51 @@ public class YoloBoxVisualizer : MonoBehaviour
             return;
         }
 
-        if (iou >= stillIoU)
+        // Live: measured again every result, so the object follows the real one.
+        if (canMeasure && Measure(det, frame, liveRays, out var measured) && measured.hit)
+            TrackCube(cube, measured, now);
+
+        // Shape: averaged strongly while resting, the newest mask counts more the faster it moves.
+        float speed01 = Mathf.InverseLerp(0f, Mathf.Max(0.01f, fastShapeSpeed), cube.velocity.magnitude);
+        float timeConstant = Mathf.Lerp(shapeTimeConstant, 0f, speed01);
+        if (iou < stillIoU)
+            timeConstant = Mathf.Min(timeConstant, movingShapeTimeConstant); // off from where it was: probably moving
+        UpdateSilhouette(cube, det, frame, ShapeWeight(cube, timeConstant, now));
+    }
+
+    // Weight of a new mask so the shape follows changes within about `timeConstant` seconds, whatever the result rate:
+    // with results every dt seconds, weight = 1 - e^(-dt / timeConstant). (At 10 results/s, 0.35 s gives about 0.25.)
+    static float ShapeWeight(ObjectCube cube, float timeConstant, float now)
+    {
+        if (timeConstant <= 0.001f)
+            return 1f;
+        float dt = Mathf.Clamp(now - cube.silhouette.LastUpdateTime, 0.001f, 1f);
+        return 1f - Mathf.Exp(-dt / timeConstant);
+    }
+
+    // Live: one new measurement of a shown object.
+    void TrackCube(ObjectCube cube, Measurement m, float now)
+    {
+        cube.UpdateShape(new Vector3(m.width, m.height, m.boxDepth), Quaternion.LookRotation(m.forward, Vector3.up), sizeSmoothing);
+        Vector3 measuredCenter = m.front + m.forward * (cube.size.z * 0.5f);
+
+        // A measurement far from where the object should be is usually a ray that hit the wall behind it.
+        // Ignore it once; if the next one agrees, the object really is there: jump.
+        Vector3 expected = cube.PredictedCenter(now, maxPrediction);
+        float limit = Mathf.Max(jumpDistance, jumpRatio * Distance(expected));
+        if ((measuredCenter - expected).magnitude > limit)
         {
-            // Agrees with the box: the object has not moved. Nothing to measure; the shape is averaged.
-            cube.moveStreak = 0;
-            cube.velocity *= 0.5f;
-            float speed01 = Mathf.InverseLerp(0f, Mathf.Max(0.01f, fastShapeSpeed), cube.velocity.magnitude);
-            UpdateSilhouette(cube, det, frame, Mathf.Lerp(shapeSmoothing, 1f, speed01));
+            cube.jumpStreak++;
+            if (cube.jumpStreak < jumpConfirmCount)
+                return;
+            cube.jumpStreak = 0;
+            cube.ResetPosition(measuredCenter, now);
+            if (logCubes)
+                Debug.Log($"[steelarm] ~ {cube.className} #{cube.serial} jumped to {Distance(cube.center):0.00} m");
             return;
         }
-
-        // Disagrees: measure again only when it keeps disagreeing (one off result is just YOLO noise).
-        cube.moveStreak++;
-        if (cube.moveStreak >= moveConfirmCount && canMeasure)
-        {
-            cube.moveStreak = 0;
-            if (Measure(det, frame, liveRays, out var moved) && moved.hit)
-                MoveCube(cube, moved, now);
-        }
-        // It may be moving: follow the newest mask closely instead of averaging it away.
-        UpdateSilhouette(cube, det, frame, movingShapeWeight);
+        cube.jumpStreak = 0;
+        cube.ApplyMeasurement(measuredCenter, now, deadband);
     }
 
     // Adds a matched mask to the object's silhouette (no depth rays: the mask is moved to the object's fixed anchor).
@@ -523,7 +596,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     {
         if (drawStyle != DrawStyle.Silhouette || !cube.Visible)
             return;
-        cube.silhouette.AddMask(MaskRegions(det, frame), frame, cube.FrontCenter, weight, viewResetAngle);
+        cube.silhouette.AddMask(MaskRegions(det, frame), frame, cube.FrontCenter, weight, viewResetAngle, outlineBlur, Time.time);
     }
 
     // The mask outline(s) in viewport coordinates, or the YOLO box when there is no mask.
@@ -571,6 +644,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             trackId = det.id ?? "",
             registered = RobotActionRegistry.GetActions(det.class_name) != null,
             drawBox = drawStyle == DrawStyle.Box,
+            renderPrediction = liveMode ? renderPrediction : 0f,
             rotation = Quaternion.LookRotation(m.forward, Vector3.up),
             createdTime = now,
             lastSeen = now,
@@ -603,6 +677,8 @@ public class YoloBoxVisualizer : MonoBehaviour
     {
         if (cube.state == ObjectCube.State.Tentative)
             return now - cube.createdTime > tentativeTimeout || cube.misses >= 2;
+        if (!scan && unseenTimeout > 0f && now - cube.lastSeen > unseenTimeout)
+            return true;
         return cube.misses >= (scan ? 1 : lostMisses);
     }
 
@@ -613,8 +689,16 @@ public class YoloBoxVisualizer : MonoBehaviour
             hovered = null;
         if (logCubes && cube.Visible)
             Debug.Log($"[steelarm] - {cube.className} #{cube.serial} ({reason})");
-        cube.Destroy();
         cubes.RemoveAt(index);
+        if (cube.Visible && fadeDuration > 0f)
+        {
+            cube.StartDying(); // fades out, then destroyed in Update
+            dying.Add(cube);
+        }
+        else
+        {
+            cube.Destroy();
+        }
     }
 
     void RemoveAll()
@@ -868,6 +952,28 @@ public class YoloBoxVisualizer : MonoBehaviour
     Color ColorFor(ObjectCube cube) => cube.registered ? boxColor : unregisteredColor;
 
     static Color WithAlpha(Color c, float a) => new Color(c.r, c.g, c.b, a);
+
+    // White line texture whose edges (across the line) fade out: a solid core, then a smooth falloff.
+    static Texture2D CreateSoftLineTexture()
+    {
+        const int h = 32;
+        var tex = new Texture2D(2, h, TextureFormat.RGBA32, false)
+        {
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+            name = "SoftLine"
+        };
+        for (int y = 0; y < h; y++)
+        {
+            float across = Mathf.Abs((y + 0.5f) / h * 2f - 1f);           // 0 at the center, 1 at the edge
+            float a = 1f - Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.35f, 1f, across));
+            var c = new Color(1f, 1f, 1f, a);
+            tex.SetPixel(0, y, c);
+            tex.SetPixel(1, y, c);
+        }
+        tex.Apply();
+        return tex;
+    }
 
     // ===================== Debug =====================
 

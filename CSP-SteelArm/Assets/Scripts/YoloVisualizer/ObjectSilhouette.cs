@@ -11,7 +11,10 @@ using UnityEngine;
 //   2. The mask is drawn into a small grid (GridSize x GridSize cells around the anchor), and the grid keeps a running
 //      average of the masks (alpha = weight of the new one). Averaging cells instead of outline points needs no point
 //      matching, and handles shapes that split or merge.
-//   3. The outline is traced back out of the averaged grid (marching squares, 50 % level) and drawn.
+//   3. The averaged grid is blurred a little (a copy; the average itself is not blurred). The blur rounds off the
+//      stair steps of the mask and the flicker of single cells along the edge.
+//   4. Between two results the shown grid blends from the previous shape to the new one, and the outline is traced
+//      out of it every frame (marching squares, 50 % level), so the shape changes continuously instead of in steps.
 //
 // Drawing: the outline lies in a plane through the anchor that always faces the viewer, so it looks the same size and
 // shape from any direction. The shape itself is the one seen from the last update; when the user walks around, the new
@@ -30,11 +33,19 @@ public class ObjectSilhouette
 
     // Averaged mask
     readonly float[] grid = new float[GridSize * GridSize];
+    readonly float[] target = new float[GridSize * GridSize];     // blurred average: the shape to blend to
+    readonly float[] previous = new float[GridSize * GridSize];   // what was shown when the newest result arrived
+    readonly float[] display = new float[GridSize * GridSize];    // shown now; the outline is traced from it
+    readonly float[] blurTemp = new float[GridSize * GridSize];
+    bool blending;
+    float blendStart;
+    float blendDuration;
     readonly byte[] coverage = new byte[GridSize * GridSize];
     bool hasGrid;
     float half;            // half the grid width, meters
     float cell;            // cell size, meters
     Vector3 lastView;      // direction camera -> anchor of the last update
+    float lastUpdateTime = float.NegativeInfinity;
 
     // Current outline: parts in the anchor plane (meters, x right, y up)
     readonly List<List<Vector2>> parts = new List<List<Vector2>>();
@@ -52,6 +63,7 @@ public class ObjectSilhouette
     }
 
     public bool HasShape => partCount > 0;
+    public float LastUpdateTime => lastUpdateTime;
     public Vector3 Position => root.transform.position;
     public Quaternion Rotation => root.transform.rotation;
 
@@ -78,7 +90,9 @@ public class ObjectSilhouette
     // regions: the mask outline(s) in viewport coordinates of `frame` (see MaskOutline.SplitIntoRegions).
     // anchor: the object's fixed point in the world. alpha: weight of this mask in the average (1 = replace).
     // resetAngle: if the view direction changed more than this since the last update, the average starts over.
-    public void AddMask(IReadOnlyList<List<Vector2>> regions, ScanFrame frame, Vector3 anchor, float alpha, float resetAngle)
+    // blurPasses: how much the outline is rounded (0 = none). now: Time.time.
+    public void AddMask(IReadOnlyList<List<Vector2>> regions, ScanFrame frame, Vector3 anchor, float alpha, float resetAngle,
+        int blurPasses, float now)
     {
         Vector3 toAnchor = anchor - frame.CameraPosition;
         if (toAnchor.sqrMagnitude < 1e-4f || regions.Count == 0)
@@ -128,6 +142,8 @@ public class ObjectSilhouette
             hasGrid = true;
         }
         lastView = view;
+        float sinceLast = now - lastUpdateTime;
+        lastUpdateTime = now;
 
         // 2. Rasterize and average.
         Rasterize(s_Local);
@@ -136,9 +152,43 @@ public class ObjectSilhouette
         for (int i = 0; i < grid.Length; i++)
             grid[i] += (coverage[i] - grid[i]) * alpha;
 
-        // 3. Outline back out of the grid.
+        // 3. Blurred copy = the new target shape.
+        Blur(blurPasses);
+
+        // 4. Blend to it until about when the next result is due (Render traces the outline every frame).
+        if (restart || partCount == 0)
+        {
+            System.Array.Copy(target, display, target.Length);
+            System.Array.Copy(target, previous, target.Length);
+            blending = false;
+            TraceOutline();
+            fillDirty = true;
+        }
+        else
+        {
+            System.Array.Copy(display, previous, display.Length);
+            blendStart = now;
+            blendDuration = Mathf.Clamp(sinceLast, 0.03f, 0.25f);
+            blending = true;
+        }
+    }
+
+    // Moves the shown shape along the blend. Returns true when the outline changed.
+    bool UpdateBlend(float now)
+    {
+        if (!blending)
+            return false;
+        float u = (now - blendStart) / blendDuration;
+        if (u >= 1f)
+        {
+            u = 1f;
+            blending = false;
+        }
+        for (int i = 0; i < display.Length; i++)
+            display[i] = previous[i] + (target[i] - previous[i]) * u;
         TraceOutline();
         fillDirty = true;
+        return true;
     }
 
     // Even-odd scanline fill of all regions into `coverage` (cell centers).
@@ -171,9 +221,38 @@ public class ObjectSilhouette
         }
     }
 
+    // target = grid blurred with a [1 2 1] / 4 kernel (each pass along x, then y). Outside the grid counts as empty.
+    void Blur(int passes)
+    {
+        float[] smoothed = target;
+        System.Array.Copy(grid, smoothed, grid.Length);
+        for (int pass = 0; pass < passes; pass++)
+        {
+            for (int y = 0; y < GridSize; y++)
+            {
+                int row = y * GridSize;
+                for (int x = 0; x < GridSize; x++)
+                {
+                    float left = x > 0 ? smoothed[row + x - 1] : 0f;
+                    float right = x < GridSize - 1 ? smoothed[row + x + 1] : 0f;
+                    blurTemp[row + x] = (left + 2f * smoothed[row + x] + right) * 0.25f;
+                }
+            }
+            for (int y = 0; y < GridSize; y++)
+            {
+                for (int x = 0; x < GridSize; x++)
+                {
+                    float down = y > 0 ? blurTemp[(y - 1) * GridSize + x] : 0f;
+                    float up = y < GridSize - 1 ? blurTemp[(y + 1) * GridSize + x] : 0f;
+                    smoothed[y * GridSize + x] = (down + 2f * blurTemp[y * GridSize + x] + up) * 0.25f;
+                }
+            }
+        }
+    }
+
     // ---------- marching squares ----------
 
-    float Value(int x, int y) => x < 0 || y < 0 || x >= GridSize || y >= GridSize ? 0f : grid[y * GridSize + x];
+    float Value(int x, int y) => x < 0 || y < 0 || x >= GridSize || y >= GridSize ? 0f : display[y * GridSize + x];
 
     // Edge keys: horizontal edge from corner (x, y) to (x + 1, y), vertical edge from (x, y) to (x, y + 1),
     // with corners -1..GridSize (the grid is surrounded by empty cells, so every outline closes).
@@ -284,7 +363,7 @@ public class ObjectSilhouette
                 continue;
             s_Order.Add(i);
         }
-        s_Order.Sort((a, b) => s_Areas[b].CompareTo(s_Areas[a]));
+        s_Order.Sort(s_ByAreaDescending);
 
         partCount = Mathf.Min(MaxParts, s_Order.Count);
         while (parts.Count < partCount)
@@ -315,9 +394,11 @@ public class ObjectSilhouette
 
     // ---------- drawing ----------
 
-    // Places the silhouette at `anchor`, facing the viewer at `head`. fillMaterial: null = no fill.
-    public void Render(bool visible, Vector3 anchor, Vector3 head, Color color, float width, Material fillMaterial)
+    // Places the silhouette at `anchor`, facing the viewer at `head`. fillMaterial: null = no fill. now: Time.time.
+    public void Render(bool visible, Vector3 anchor, Vector3 head, Color color, float width, Material fillMaterial, float now)
     {
+        if (visible)
+            UpdateBlend(now);
         if (!visible || partCount == 0)
         {
             if (root.activeSelf)
@@ -375,10 +456,9 @@ public class ObjectSilhouette
             {
                 Mesh mesh = f.sharedMesh;
                 mesh.Clear();
-                var vertices = new Vector3[PointsPerPart];
                 for (int k = 0; k < PointsPerPart; k++)
-                    vertices[k] = parts[p][k];
-                mesh.vertices = vertices;
+                    s_Vertices[k] = parts[p][k];
+                mesh.vertices = s_Vertices;
                 mesh.triangles = Polygon2D.Triangulate(parts[p]);
                 mesh.RecalculateBounds();
             }
@@ -462,6 +542,8 @@ public class ObjectSilhouette
     static readonly List<int> s_Order = new List<int>();
     static readonly Dictionary<int, Vector2Int> s_Links = new Dictionary<int, Vector2Int>();
     static readonly HashSet<int> s_Visited = new HashSet<int>();
+    static readonly Vector3[] s_Vertices = new Vector3[PointsPerPart];
+    static readonly System.Comparison<int> s_ByAreaDescending = (a, b) => s_Areas[b].CompareTo(s_Areas[a]);
 
     static List<Vector2> RentList() => s_Pool.Count > 0 ? s_Pool.Pop() : new List<Vector2>();
 

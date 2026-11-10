@@ -43,6 +43,11 @@ public class ObjectCube
     public int hits;                 // results matched to this object
     public int misses;               // results in a row in which it was in view but not found
     public int moveStreak;           // results in a row that disagree with the box (it may have moved)
+    public int jumpStreak;           // live: measurements in a row far from where the object should be (depth outliers?)
+    public float renderPrediction;   // live: draw this far (seconds) ahead along the velocity, between results
+    public float fade;               // 0..1 opacity: fades in when shown, out when removed
+    public bool Dying { get; private set; }
+    public bool FadedOut => Dying && fade <= 0.001f;
     public float createdTime;
     public float lastSeen;
 
@@ -129,6 +134,7 @@ public class ObjectCube
         root.transform.SetPositionAndRotation(drawnCenter, drawnRotation);
         root.SetActive(drawBox);
         flashStart = now;
+        fade = 0f;
     }
 
     // Confirmed only: a new measurement of the center (the object may have moved).
@@ -144,9 +150,26 @@ public class ObjectCube
         }
         Vector3 previous = center;
         center = centerFilter.Filter(measuredCenter, now);
-        velocity = dt > 1e-3f && dt < 1f ? (center - previous) / dt : Vector3.zero;
+        Vector3 rawVelocity = dt > 1e-3f && dt < 1f ? (center - previous) / dt : Vector3.zero;
+        velocity = Vector3.Lerp(velocity, rawVelocity, 0.5f); // a little smoothing: it is used for prediction
         lastMeasureTime = now;
         return true;
+    }
+
+    // Live tracking: the box turns to face the camera that measured it and its size follows the measurements.
+    public void UpdateShape(Vector3 measuredSize, Quaternion facing, float k)
+    {
+        size = Vector3.Lerp(size, measuredSize, k);
+        rotation = Quaternion.Slerp(rotation, facing, k);
+    }
+
+    // Jumps to a new position (the object really is somewhere else; don't slide there slowly).
+    public void ResetPosition(Vector3 newCenter, float now)
+    {
+        center = newCenter;
+        velocity = Vector3.zero;
+        centerFilter.Reset(newCenter, now);
+        lastMeasureTime = now;
     }
 
     // World corners of a box (0-3 bottom, 4-7 top).
@@ -160,6 +183,14 @@ public class ObjectCube
 
     // ---------- drawing ----------
 
+    // Removed: no longer matched or pointed at, fades out; destroy it once FadedOut.
+    public void StartDying()
+    {
+        Dying = true;
+        highlighted = false;
+        highlightFill = null;
+    }
+
     // fill: the silhouette's fill while highlighted (null = none).
     public void SetHighlight(bool on, Color color, Material fill = null)
     {
@@ -170,15 +201,20 @@ public class ObjectCube
 
     // Eases the drawn box to the box and updates its look. t: how far to move this frame (0..1).
     // head: the viewer's position (the silhouette faces it).
-    public void Animate(float t, float now, Vector3 head, Color normalColor, float normalWidth, Color flashColor, float flashDuration)
+    // fadeStep: how much the opacity may change this frame (deltaTime / fade duration; >= 1 = no fading).
+    public void Animate(float t, float now, Vector3 head, Color normalColor, float normalWidth, Color flashColor, float flashDuration,
+        float fadeStep)
     {
         if (!Visible)
         {
-            silhouette.Render(false, default, default, default, 0f, null);
+            silhouette.Render(false, default, default, default, 0f, null, now);
             return;
         }
+        fade = Mathf.MoveTowards(fade, Dying ? 0f : 1f, fadeStep);
 
-        drawnCenter = Vector3.Lerp(drawnCenter, center, t);
+        // Live: between results the drawn object keeps going along its velocity (for a short while only).
+        Vector3 target = renderPrediction > 0f ? PredictedCenter(now, renderPrediction) : center;
+        drawnCenter = Vector3.Lerp(drawnCenter, target, t);
         drawnSize = Vector3.Lerp(drawnSize, size, t);
         drawnRotation = Quaternion.Slerp(drawnRotation, rotation, t);
         if (root.activeSelf != drawBox)
@@ -202,11 +238,11 @@ public class ObjectCube
             else
             {
                 float e = (1f - k) * (1f - k); // ease out
-                color = Color.Lerp(color, flashColor, e);
-                width *= 1f + 2.5f * e;
+                color = Color.Lerp(color, flashColor, e); // color only: the outline keeps its size
             }
         }
-        silhouette.Render(!drawBox, DrawnFrontCenter, head, color, width, highlighted ? highlightFill : null);
+        color.a *= fade;
+        silhouette.Render(!drawBox, DrawnFrontCenter, head, color, width, highlighted ? highlightFill : null, now);
         if (!drawBox)
             return;
         if (color != appliedColor || !Mathf.Approximately(width, appliedWidth))
@@ -248,7 +284,7 @@ public class ObjectCube
     public bool TryHit(Ray ray, out float distance)
     {
         distance = 0f;
-        if (!Visible)
+        if (!Visible || Dying)
             return false;
         if (!drawBox)
             return silhouette.TryHit(ray, out distance);
