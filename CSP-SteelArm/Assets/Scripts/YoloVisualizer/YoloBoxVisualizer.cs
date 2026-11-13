@@ -84,6 +84,12 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     public static YoloBoxVisualizer Instance { get; private set; }
 
+    // Shown in the settings menu (Advanced): where the results come from, and the latest one.
+    public string ResultSourceDescription
+        => !subscribed ? Loc.T("status.notStarted") : Loc.F(liveMode ? "status.detectionTopic" : "status.scanTopic", topicName);
+    public float LastResultTime => lastResultTime;   // Time.time of the latest YOLO result (< 0: none yet)
+    public int LastResultCount { get; private set; }
+
     CameraImagePublisher publisher;
     DepthMeasurer depth;
     ObjectTracker tracker;
@@ -195,6 +201,7 @@ public class YoloBoxVisualizer : MonoBehaviour
             scanPendingSince = -1f;
         }
         lastResultTime = Time.time;
+        LastResultCount = msg.detections.Length;
         resultCount++;
 
         // The camera pose of the image this result belongs to (not remembered any more if the result is very late).
