@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using RosMessageTypes.Yolo;
 using UnityEngine;
 using PassthroughCameraAccess = Meta.XR.PassthroughCameraAccess;
 
@@ -5,6 +7,8 @@ using PassthroughCameraAccess = Meta.XR.PassthroughCameraAccess;
 // Converts between positions in that image (YOLO pixels / viewport) and world positions.
 public readonly struct ScanFrame
 {
+    static readonly List<List<Vector2>> s_NoRegions = new List<List<Vector2>>();
+
     readonly PassthroughCameraAccess camera;
     readonly Pose pose;
     public readonly Vector3 forward;     // camera's optical axis
@@ -46,5 +50,25 @@ public readonly struct ScanFrame
         }
         viewport = camera.WorldToViewportPoint(world, pose);
         return true;
+    }
+
+    // The YOLO box of a result, as a viewport rectangle.
+    public Rect BoxRect(DetectionMsg det)
+    {
+        var center = det.bbox.center.position;
+        var size = det.bbox.size;
+        Vector2 leftBottom = PixelToViewport(center.x - size.x / 2, center.y + size.y / 2);
+        Vector2 rightTop = PixelToViewport(center.x + size.x / 2, center.y - size.y / 2);
+        return Rect.MinMaxRect(leftBottom.x, leftBottom.y, rightTop.x, rightTop.y);
+    }
+
+    // The mask outline(s) of a result in viewport coordinates; empty when it has no mask (no -seg model).
+    // The returned list is reused by the next call.
+    public IReadOnlyList<List<Vector2>> MaskRegions(DetectionMsg det)
+    {
+        var points = det.mask?.data;
+        if (points == null || points.Length < 3)
+            return s_NoRegions;
+        return MaskOutline.SplitIntoRegions(points, imageWidth, imageHeight);
     }
 }
