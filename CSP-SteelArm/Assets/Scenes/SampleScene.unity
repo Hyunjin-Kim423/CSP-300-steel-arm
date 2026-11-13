@@ -798,12 +798,18 @@ MonoBehaviour:
   useTracking: 0
   trackingTopicName: /yolo/tracking
   trackingFallbackTimeout: 1.5
+  createScore: 0.5
+  keepScore: 0.3
   matchIoU: 0.15
   stillIoU: 0.4
   confirmHits: 3
   tentativeTimeout: 1
   lostMisses: 4
   unseenTimeout: 10
+  edgeMargin: 0.015
+  edgeBigArea: 0.25
+  duplicateIoU: 0.8
+  skipPartsOfSameClass: 1
   occlusionCheck: 1
   useTrackIds: 1
   maxPrediction: 0.3
@@ -829,7 +835,7 @@ MonoBehaviour:
   waitingWaveInterval: 1.2
   scanResultTimeout: 5
   drawStyle: 0
-  shapeTimeConstant: 0.35
+  shapeTimeConstant: 0.8
   movingShapeTimeConstant: 0.08
   fastShapeSpeed: 0.5
   outlineBlur: 1
@@ -839,6 +845,9 @@ MonoBehaviour:
   unregisteredColor: {r: 1, g: 0, b: 0, a: 1}
   fillAlpha: 0.2
   lineWidth: 0.004
+  fadeDuration: 0.2
+  softLines: 1
+  softLineWidthScale: 1.8
   flashColor: {r: 0.55, g: 0.9, b: 1, a: 1}
   flashDuration: 0.5
   clearWhenSilent: 3

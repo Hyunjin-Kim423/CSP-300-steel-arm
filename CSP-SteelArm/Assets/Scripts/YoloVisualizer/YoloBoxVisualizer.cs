@@ -28,9 +28,16 @@ using EnvironmentRaycastManager = Meta.XR.EnvironmentRaycastManager;
 //                                   A single far-off measurement is ignored (depth outlier); two in a row are a jump.
 //                matched (scan)  -> measured again, refines the position
 //                not matched     -> new tentative object; shown once seen confirmHits times
+//                                   (not where an object already is: see 'Duplicates' below)
 //                in view but not found for lostMisses results -> removed; not seen at all for unseenTimeout -> removed
 //                every matched result also adds its mask to the object's silhouette (no depth rays needed)
 //   4. Draw      each frame the drawn object eases to its box; the pointed one is highlighted, the trigger opens its menu.
+//
+// Image border: an object cut off by the border gives a smaller box and mask than the whole object. So boxes are
+// compared by their part INSIDE the image, and a cut-off result only keeps its object alive: it creates nothing and
+// changes neither position nor shape (unless it is so big that it can never fit; see edgeBigArea).
+// Duplicates: no new object where an existing one already overlaps the result almost completely (YOLO naming one
+// thing twice, or changing its mind about the class), or inside an object of the same class (YOLO found a part of it).
 //
 // Measuring an object: a few depth rays inside its YOLO box (inside the mask if a -seg model sends one), median depth
 // = front face; width / height from the YOLO box at that depth; front-to-back depth guessed from the width.
@@ -74,6 +81,14 @@ public class YoloBoxVisualizer : MonoBehaviour
     public int lostMisses = 10;
     [Tooltip("Live: an object not seen at all for this many seconds is removed, in view or not (0 = keep it).")]
     public float unseenTimeout = 10f;
+    [Tooltip("A result whose box comes this close to the image border (0-1 of the image) is cut off by the border: it only keeps its object alive (no new object, no position / shape update). 0 = off.")]
+    [Range(0f, 0.1f)] public float edgeMargin = 0.015f;
+    [Tooltip("...unless its box covers at least this much of the image (a big, close object that cannot fit): then it is used normally.")]
+    [Range(0f, 1f)] public float edgeBigArea = 0.25f;
+    [Tooltip("No new object where an existing one (any class) already overlaps the result at least this much (IoU). 1 = off.")]
+    [Range(0.3f, 1f)] public float duplicateIoU = 0.8f;
+    [Tooltip("No new object whose center lies inside an existing object of the same class (YOLO found a part of it).")]
+    public bool skipPartsOfSameClass = true;
     [Tooltip("Before counting a box as 'not found', check with one depth ray whether something is in front of it (e.g. a hand).")]
     public bool occlusionCheck = true;
     [Tooltip("Trust yolo_ros track ids first when matching (only with Use Tracking).")]
@@ -205,7 +220,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     float lastWaveTime;
 
     // Stats (logStats)
-    int statResults, statMeasures, statRays;
+    int statResults, statMeasures, statRays, statCutOff, statDuplicates;
     float statSince;
 
     // Scratch (reused every result, no allocations)
@@ -502,8 +517,20 @@ public class YoloBoxVisualizer : MonoBehaviour
         // 5. Results that match no box: new objects.
         for (int i = 0; i < detections.Length; i++)
         {
-            if (!detUsed[i] && detections[i].score >= createScore)
-                CreateCube(detections[i], frame, scan, canMeasure, now);
+            if (detUsed[i] || detections[i].score < createScore)
+                continue;
+            Rect rect = DetectionRect(detections[i], frame);
+            if (!scan && IsCutOff(rect))
+            {
+                statCutOff++;   // wait until it is fully in the image (scan mode has only this one result)
+                continue;
+            }
+            if (OverlapsExisting(rect, oldCount))
+            {
+                statDuplicates++;
+                continue;
+            }
+            CreateCube(detections[i], frame, scan, canMeasure, now);
         }
 
         // 6. Remove what is gone.
@@ -516,11 +543,19 @@ public class YoloBoxVisualizer : MonoBehaviour
 
     void UpdateMatched(ObjectCube cube, DetectionMsg det, float iou, ScanFrame frame, bool scan, bool canMeasure, float now)
     {
-        cube.detection = det;
         cube.trackId = det.id ?? "";
-        cube.hits++;
         cube.misses = 0;
         cube.lastSeen = now;
+
+        // Cut off by the image border: only part of the object is in this result. It shows the object is still
+        // there, but its box and mask are too small to measure or draw from.
+        if (IsCutOff(DetectionRect(det, frame)))
+        {
+            statCutOff++;
+            return;
+        }
+        cube.detection = det;
+        cube.hits++;
 
         if (cube.state == ObjectCube.State.Tentative)
         {
@@ -637,6 +672,11 @@ public class YoloBoxVisualizer : MonoBehaviour
             return; // head turning fast: wait for a sharper frame
         if (!Measure(det, frame, scan ? scanRays : liveRays, out var m) || !UsableDepth(m, scan))
             return;
+        if (skipPartsOfSameClass && IsInsideSameClass(det.class_name, m.front + m.forward * (m.boxDepth * 0.5f)))
+        {
+            statDuplicates++;
+            return;
+        }
 
         var cube = new ObjectCube(nextSerial++, det.class_name, lineMaterial)
         {
@@ -724,12 +764,51 @@ public class YoloBoxVisualizer : MonoBehaviour
             yMin = Mathf.Min(yMin, v.y); yMax = Mathf.Max(yMax, v.y);
         }
         p.valid = true;
-        p.rect = Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+        // Only the part inside the image: that is all YOLO can see of it (zero size when it is completely outside).
+        p.rect = Rect.MinMaxRect(Mathf.Clamp01(xMin), Mathf.Clamp01(yMin), Mathf.Clamp01(xMax), Mathf.Clamp01(yMax));
         // In view = its center is clearly inside the image (an object at the edge may be cut off and missed by YOLO).
         const float margin = 0.05f;
         p.inView = frame.WorldToViewport(c, out Vector2 vc)
                    && vc.x > margin && vc.x < 1f - margin && vc.y > margin && vc.y < 1f - margin;
         return p;
+    }
+
+    // The result's box touches the image border, so the object continues outside the image (and is not simply too big).
+    bool IsCutOff(Rect r)
+    {
+        if (edgeMargin <= 0f)
+            return false;
+        bool touches = r.xMin < edgeMargin || r.yMin < edgeMargin || r.xMax > 1f - edgeMargin || r.yMax > 1f - edgeMargin;
+        return touches && r.width * r.height < edgeBigArea;
+    }
+
+    // An existing object (any class; the first `count` in the list, as projected for this result) already covers
+    // this result almost exactly.
+    bool OverlapsExisting(Rect r, int count)
+    {
+        if (duplicateIoU >= 1f)
+            return false;
+        for (int j = 0; j < count; j++)
+        {
+            if (projections[j].valid && IoU(projections[j].rect, r) >= duplicateIoU)
+                return true;
+        }
+        return false;
+    }
+
+    // The point lies inside the box (a little enlarged) of an existing object of this class.
+    bool IsInsideSameClass(string className, Vector3 point)
+    {
+        foreach (var cube in cubes)
+        {
+            if (cube.className != className)
+                continue;
+            Vector3 local = Quaternion.Inverse(cube.rotation) * (point - cube.center);
+            Vector3 half = cube.size * 0.6f + new Vector3(0.03f, 0.03f, 0.03f);
+            if (Mathf.Abs(local.x) <= half.x && Mathf.Abs(local.y) <= half.y && Mathf.Abs(local.z) <= half.z)
+                return true;
+        }
+        return false;
     }
 
     // Something (a hand, a person) is clearly in front of the box in this image.
@@ -764,7 +843,8 @@ public class YoloBoxVisualizer : MonoBehaviour
         if (w <= 0f || h <= 0f)
             return 0f;
         float inter = w * h;
-        return inter / (a.width * a.height + b.width * b.height - inter);
+        float union = a.width * a.height + b.width * b.height - inter;
+        return union > 1e-9f ? inter / union : 0f;
     }
 
     // Measures one detection: front face center, width and height (gravity-aligned), facing the camera horizontally.
@@ -983,8 +1063,8 @@ public class YoloBoxVisualizer : MonoBehaviour
             return;
         float seconds = Time.time - statSince;
         int tentative = cubes.Count - CountVisible();
-        Debug.Log($"[steelarm] boxes: {CountVisible()} shown, {tentative} tentative | last {seconds:0} s: {statResults} results, {statMeasures} measurements, {statRays} depth rays ({statRays / seconds:0} rays/s)");
-        statResults = statMeasures = statRays = 0;
+        Debug.Log($"[steelarm] boxes: {CountVisible()} shown, {tentative} tentative | last {seconds:0} s: {statResults} results, {statMeasures} measurements, {statRays} depth rays ({statRays / seconds:0} rays/s), {statCutOff} cut off by the image border, {statDuplicates} duplicates skipped");
+        statResults = statMeasures = statRays = statCutOff = statDuplicates = 0;
         statSince = Time.time;
     }
 }
