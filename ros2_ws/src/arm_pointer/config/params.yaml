@@ -1,0 +1,81 @@
+pointer_node:
+  ros__parameters:
+    port: /dev/so101_follower
+    # "" means ~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json
+    calibration_file: ""
+    # SAFETY: true = read-only.
+    # It reads the arm, publishes /joint_states, and logs what it WOULD do.
+    # It never turns on torque and never writes a goal position.
+    dry_run: true
+    control_rate_hz: 50.0
+    # Speed limit of each joint.
+    max_speed_deg_s: 20.0
+    # STS3215 acceleration register (0-254). Lower is softer.
+    servo_acceleration: 20
+    # Stay this far inside the calibrated min/max.
+    limit_margin_ticks: 60
+    # The wrist_roll calibration is 0..4095. So limit it around the start pose.
+    wrist_roll_half_range_deg: 45.0
+    # pan = atan2(y, x), raw = pan_front_raw + pan_sign * pan * 4096 / (2*pi)
+    # I measured by hand after recalibration: front (+x) = 1976, +y (left) = 1762, -y (right) = 2252.
+    # So the raw value gets smaller to the left.
+    pan_front_raw: 1976
+    pan_sign: -1
+    # Ignore the target if it is this close to the base axis (the direction is not clear).
+    min_target_radius_m: 0.03
+    # When exit, go back to the pose at startup, then turn off torque.
+    return_to_start_on_exit: true
+    # If no valid /target_point for this time, hold the current pan.
+    target_timeout_s: 1.0
+    # If no valid target for this time (from the last valid target), go back to the startup pose.
+    return_after_s: 10.0
+    # Pointing pose (raw). I measured it by moving the arm by hand on 2026-10-26.
+    # The arm goes here when the first target comes.
+    # When the watchdog returns (or the node exits), the arm goes back to the startup pose.
+    # If one joint is -1, this is off.
+    ready_shoulder_lift_raw: 1500
+    ready_elbow_flex_raw: 1150
+    ready_wrist_flex_raw: 1910
+    # Vertical aiming is optional. It is OFF by default.
+    # After the ready pose is reached, the arm follows the height of the target.
+    # See arm_pointer/mapping.py (PlanarArm, solve_vertical_ik).
+    # The IK points the HAND along the line from the shoulder to the target.
+    # But the wrist moves only reach_wrist_m along this line.
+    # So the fingertip stays about reach_wrist_m + 0.16 m from the shoulder. It is far from the head.
+    vertical_ik: false
+    # "wrist_aim" (default): shoulder and elbow stay at the ready pose.
+    #   Only the wrist turns the hand to the target. It uses the wrist position from the URDF model.
+    # "ik": planar IK for all 3 joints. It can not reach low targets on the back side.
+    vertical_mode: wrist_aim
+    # On this robot, the front of the arm (where the hand points in the URDF "L" pose) is -x of /target_point.
+    # The user stands at +x. This is the BACK side of the arm, so the arm leans back to the user.
+    # The ready pose is like this. I checked it by hand on 2026-11-02.
+    # +1 means the target is in front of the arm.
+    # The other side of the robot is a desk, so we can not turn the arm.
+    target_side: -1
+    # Joint direction. I checked it on the real arm with one-joint tests.
+    # Higher raw value tilts everything after the joint DOWN (shoulder_lift, elbow_flex and wrist_flex).
+    # sign +1 means this direction.
+    lift_sign: 1
+    elbow_sign: 1
+    wrist_sign: 1
+    # Raw value when each joint angle is 0 in the URDF ("L" pose: upper arm vertical, forearm and hand horizontal to the front).
+    # 2048 (the URDF/LeRobot assumption) was wrong.
+    # From 2 side photos with known raw values, the upper arm is ~25 deg steeper than 2048 says.
+    # These are first guesses from the photos (+-100 ticks). We still need to check by posing the arm again.
+    # lift: changed from 2320 to 2400 after the 2nd photo (elbow and wrist angles matched within 1 deg, the whole arm was ~7 deg high).
+    lift_zero_raw: 2400
+    elbow_zero_raw: 1840
+    wrist_zero_raw: 2070
+    # Shoulder axis position in the /target_point frame.
+    # x: 0.0304 m in front of the pan axis (from the URDF).
+    shoulder_x_m: 0.0304
+    # z: a guess from the desk height (I measured the tag from the back of the circuit board, not from the shoulder).
+    # When the headset was on the desk, z was -0.088 (the camera is ~4 cm above the desk).
+    # So the desk is about -0.13, and the shoulder axis is about 0.13 above it. That is about 0.0.
+    shoulder_z_m: 0.0
+    # Distance from the shoulder to the wrist along the line (the arm can reach 0.03..0.24 m). The tip is ~0.30 m from the shoulder.
+    reach_wrist_m: 0.14
+    # Limit of the aiming height angle, seen from the target side (degrees above horizontal).
+    ik_pitch_min_deg: -40.0
+    ik_pitch_max_deg: 50.0
