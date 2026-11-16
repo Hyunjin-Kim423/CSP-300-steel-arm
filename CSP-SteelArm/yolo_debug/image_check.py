@@ -1,4 +1,4 @@
-# Prints the size fields of a few /camera/rgb/image_raw messages and saves them to image_check.txt (same folder).
+# Prints the size fields of a few /quest/camera/image_raw messages and saves them to image_check.txt (same folder).
 import os, rclpy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -21,7 +21,7 @@ def cb(msg):
 
 rclpy.init()
 node = rclpy.create_node("image_check")
-node.create_subscription(Image, "/camera/rgb/image_raw", cb, qos_profile_sensor_data)
+node.create_subscription(Image, "/quest/camera/image_raw", cb, qos_profile_sensor_data)
 try:
     rclpy.spin(node)
 except Exception:
