@@ -1,26 +1,41 @@
 @echo off
 rem ============================================================
 rem  SteelArm launcher
-rem   Tab 1: ROS TCP Endpoint (WSL)
-rem   Tab 2: YOLO             (WSL, starts 2s after tab 1)
-rem   Tab 3: adb reverse      (Windows adb)
-rem   Tab 4: Unity logcat     (Windows adb, headset-side logs)
-rem  Uses Windows Terminal tabs; falls back to separate windows if wt is missing.
+rem   1. Preflight (this window): WSL, robot arm USB (registers it with usbipd if needed), headset (adb)
+rem   2. Opens ONE window: the SteelArm dashboard (WSL). It starts the ROS endpoint, YOLO, alignment (LOCK)
+rem      and the arm, attaches the arm USB, sets adb reverse and keeps the headset awake.
+rem   Every program logs to local\logs\session_<date>\ ; the window shows a status table.
+rem
+rem   start_steelarm.bat           choose the mode on screen
+rem   start_steelarm.bat 2         start mode 2 directly (1 head, 2 object, 3/4 dry run)
+rem   start_steelarm.bat logcat    also open a Unity logcat tab
+rem   start_steelarm.bat nocheck   skip the preflight
 rem ============================================================
+setlocal
+set "REPO=%~dp0.."
+set "ARG="
+set "LOGCAT="
+set "NOCHECK="
+for %%A in (%*) do (
+    if /i "%%~A"=="logcat" (set "LOGCAT=1") else if /i "%%~A"=="nocheck" (set "NOCHECK=1") else (set "ARG=%%~A")
+)
+
+if not defined NOCHECK (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO%\tools\steelarm\preflight.ps1"
+    if errorlevel 1 goto :eof
+)
 
 where wt >nul 2>nul
 if errorlevel 1 goto fallback
 
-wt -w new new-tab --title "1 ROS Endpoint" --suppressApplicationTitle wsl.exe -e bash -ic "ros2 run ros_tcp_endpoint default_server_endpoint --ros-args -p ROS_IP:=0.0.0.0\; ec=$?\; echo\; echo '[STOPPED] exit code:' $ec\; exec bash" ^
- ; new-tab --title "2 YOLO" --suppressApplicationTitle wsl.exe -e bash -ic "sleep 2 && ros2 launch yolo_bringup yolo.launch.py model:=yolov8n-seg.pt retina_masks:=True threshold:=0.3 input_image_topic:=/quest/camera/image_raw\; ec=$?\; echo\; echo '[STOPPED] exit code:' $ec\; exec bash" ^
- ; new-tab --title "3 adb reverse" --suppressApplicationTitle cmd /k "adb reverse tcp:10000 tcp:10000 && echo [OK] reverse active: && adb reverse --list || echo [ERROR] adb reverse failed - check the headset is connected (adb devices)" ^
- ; new-tab --title "4 Unity logcat" --suppressApplicationTitle cmd /k "echo Waiting for headset... && adb logcat -s Unity" ^
- ; focus-tab -t 0
+if defined LOGCAT (
+    wt -w new new-tab --title "SteelArm" wsl.exe --cd "%REPO%" -e bash tools/steelarm/steelarm.sh %ARG% ; new-tab --title "Unity logcat" cmd /k "adb logcat -s Unity" ; focus-tab -t 0
+) else (
+    wt -w new new-tab --title "SteelArm" wsl.exe --cd "%REPO%" -e bash tools/steelarm/steelarm.sh %ARG%
+)
 goto :eof
 
 :fallback
-echo Windows Terminal not found - opening separate windows instead.
-start "1 ROS Endpoint" wsl.exe -e bash -ic "ros2 run ros_tcp_endpoint default_server_endpoint --ros-args -p ROS_IP:=0.0.0.0; ec=$?; echo; echo '[STOPPED] exit code:' $ec; exec bash"
-start "2 YOLO" wsl.exe -e bash -ic "sleep 2 && ros2 launch yolo_bringup yolo.launch.py model:=yolov8n-seg.pt retina_masks:=True threshold:=0.3 input_image_topic:=/quest/camera/image_raw; ec=$?; echo; echo '[STOPPED] exit code:' $ec; exec bash"
-start "3 adb reverse" cmd /k "adb reverse tcp:10000 tcp:10000 && echo [OK] reverse active: && adb reverse --list || echo [ERROR] adb reverse failed - check the headset is connected (adb devices)"
-start "4 Unity logcat" cmd /k "echo Waiting for headset... && adb logcat -s Unity"
+echo Windows Terminal not found - opening a normal window instead.
+start "SteelArm" wsl.exe --cd "%REPO%" -e bash tools/steelarm/steelarm.sh %ARG%
+if defined LOGCAT start "Unity logcat" cmd /k "adb logcat -s Unity"

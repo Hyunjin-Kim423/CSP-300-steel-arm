@@ -1,0 +1,10 @@
+# TEAM settings for the object modes (2 and 4): desk-side ready pose (committed).
+# Recorded by hand on our arm and desk (2026-11-24) with: python3 tools/steelarm/record_pose.py --shared
+# The hand leans over the desk, so the object point (mirrored by object_target.py) + target_side 1 points at it.
+# A PC can override this with local/arm_object.yaml (record_pose.py without --shared).
+pointer_node:
+  ros__parameters:
+    ready_shoulder_lift_raw: 2859
+    ready_elbow_flex_raw: 1047
+    ready_wrist_flex_raw: 1760
+    target_side: 1

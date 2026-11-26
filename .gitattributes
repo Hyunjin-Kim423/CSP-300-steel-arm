@@ -1,0 +1,9 @@
+# Line endings for the scripts that run inside WSL (Linux): with CRLF they fail ("$'\r': command not found").
+*.sh                  text eol=lf
+tools/**/*.py         text eol=lf
+ros2_ws/**/*.py       text eol=lf
+ros2_ws/**/*.yaml     text eol=lf
+config/**/*.yaml      text eol=lf
+# Windows scripts need CRLF.
+*.bat                 text eol=crlf
+*.ps1                 text eol=crlf

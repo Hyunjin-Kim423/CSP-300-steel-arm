@@ -1,0 +1,8 @@
+# TEAM settings for arm_pointer, every mode (committed, shared by everyone).
+# Loaded by tools/steelarm/dashboard.py AFTER ros2_ws/src/arm_pointer/config/params.yaml,
+# so only the values written here change. Do not put PC-specific things here (port, file paths):
+# the dashboard passes those itself, and a PC can override anything in local/arm_local.yaml.
+pointer_node:
+  ros__parameters:
+    # A little slower than the package default (20) while we test.
+    max_speed_deg_s: 15.0

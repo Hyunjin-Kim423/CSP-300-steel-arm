@@ -55,9 +55,9 @@ public class SettingsMenu : MonoBehaviour
     static readonly Color KnobOff = new Color(0.85f, 0.87f, 0.9f, 1f);
     static readonly Color DotOff = new Color(1f, 1f, 1f, 0.25f);
 
-    enum Tab { Scan, Menu, Display, Advanced, Language }
-    static readonly Tab[] Tabs = { Tab.Scan, Tab.Menu, Tab.Display, Tab.Advanced, Tab.Language };
-    static readonly string[] TabKeys = { "tab.scan", "tab.menu", "tab.display", "tab.advanced", "tab.language" };
+    enum Tab { Scan, Menu, Display, Advanced, Debug, Language }
+    static readonly Tab[] Tabs = { Tab.Scan, Tab.Menu, Tab.Display, Tab.Advanced, Tab.Debug, Tab.Language };
+    static readonly string[] TabKeys = { "tab.scan", "tab.menu", "tab.display", "tab.advanced", "tab.debug", "tab.language" };
 
     static AppSettings S => AppSettings.Current;
 
@@ -328,6 +328,7 @@ public class SettingsMenu : MonoBehaviour
             case Tab.Menu: BuildMenuPage(); break;
             case Tab.Display: BuildDisplayPage(); break;
             case Tab.Advanced: BuildAdvancedPage(); break;
+            case Tab.Debug: BuildDebugPage(); break;
             case Tab.Language: BuildLanguagePage(); break;
         }
     }
@@ -335,6 +336,8 @@ public class SettingsMenu : MonoBehaviour
     void BuildTabs()
     {
         ClearChildren(tabRoot);
+        // The prefab sized the tab strip for 5 tabs; fit it to the current count (48 px tabs, 6 px apart).
+        tabRoot.offsetMin = new Vector2(tabRoot.offsetMin.x, tabRoot.offsetMax.y - (Tabs.Length * 48f + (Tabs.Length - 1) * 6f));
         for (int i = 0; i < Tabs.Length; i++)
         {
             Tab t = Tabs[i];
@@ -392,11 +395,21 @@ public class SettingsMenu : MonoBehaviour
             () => (int)S.scanMode, v => S.scanMode = (AppSettings.ScanMode)v);
         AddToggle("adv.tracking", "adv.tracking.desc", () => S.useTracking, v => S.useTracking = v,
             () => S.scanMode == AppSettings.ScanMode.Live);
-        AddToggle("adv.log", "adv.log.desc", () => S.showLog, v => S.showLog = v);
         rosValue = AddInfo("status.ros");
         topicValue = AddInfo("status.topic");
         lastValue = AddInfo("status.last");
         UpdateStatus();
+    }
+
+    // Debug switches, grouped by the prefix of their label: View · / Log · / Gizmo ·
+    void BuildDebugPage()
+    {
+        AddToggle("dbg.hud", "dbg.hud.desc", () => S.debugHud, v => S.debugHud = v);
+        AddToggle("adv.log", "adv.log.desc", () => S.showLog, v => S.showLog = v);
+        AddToggle("dbg.logScan", "dbg.logScan.desc", () => S.logScanStats, v => S.logScanStats = v);
+        AddToggle("dbg.logSelection", "dbg.logSelection.desc", () => S.logSelection, v => S.logSelection = v);
+        AddToggle("dbg.gizmoRobot", "dbg.gizmoRobot.desc", () => S.gizmoRobotBase, v => S.gizmoRobotBase = v);
+        AddToggle("dbg.gizmoTarget", "dbg.gizmoTarget.desc", () => S.gizmoTarget, v => S.gizmoTarget = v);
     }
 
     void BuildLanguagePage()

@@ -15,3 +15,6 @@
 # Python generated files
 **/__pycache__/
 *.py[cod]
+
+# Machine-specific files: arm calibration, PC overrides, logs (see config/steelarm/README.md)
+/local/

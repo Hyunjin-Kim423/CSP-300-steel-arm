@@ -40,6 +40,13 @@ public class AppSettings
     public bool useTracking = true;             // live mode only
     public bool showLog = false;
 
+    // ----- Debug (Settings > Debug) -----
+    public bool debugHud = false;               // overlay: dashboard status (/steelarm/status) + app values
+    public bool logScanStats = true;            // console: YOLO object statistics every few seconds
+    public bool logSelection = true;            // console: selected object sent to the robot
+    public bool gizmoRobotBase = false;         // gizmo: where the robot base is after LOCK
+    public bool gizmoTarget = false;            // gizmo: the point sent to the robot for the selected object
+
     // ---------- derived values ----------
 
     public Color RegisteredColor => colorScheme == ColorScheme.GreenRed ? Hex(0x4ADE80) : Hex(0x60A5FA);

@@ -83,6 +83,8 @@ public class YoloBoxVisualizer : MonoBehaviour
     // ===================== State =====================
 
     public static YoloBoxVisualizer Instance { get; private set; }
+    // Fired on every select click with the object under the ray (null = empty space). Used by SelectedObjectPublisher.
+    public static event System.Action<ObjectCube> ObjectSelected;
 
     // Shown in the settings menu (Advanced): where the results come from, and the latest one.
     public string ResultSourceDescription
@@ -307,6 +309,7 @@ public class YoloBoxVisualizer : MonoBehaviour
     void Select(Ray ray)
     {
         ObjectCube pointed = tracker.FindPointed(ray, out _);
+        ObjectSelected?.Invoke(pointed);
         if (pointed != null && ObjectMenuGenerator._instance != null)
             ObjectMenuGenerator._instance.Open(MenuTarget.From(pointed, ColorFor(pointed)));
     }
