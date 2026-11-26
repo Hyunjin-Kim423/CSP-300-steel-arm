@@ -359,19 +359,34 @@ class PointerNode(Node):
     def safe_shutdown(self):
         try:
             if self.torque_on:
+                # Ctrl+C can arrive in the middle of a bus transfer (the control loop talks to the servos
+                # 50 times a second). Then the bus refuses everything ("Port is in use") until it is reset.
+                self.bus.recover()
                 self._ramp_to_start()
                 self.bus.set_torque(False)
                 self.get_logger().info("Torque disabled.")
         except KeyboardInterrupt:
             self.get_logger().warn("Second Ctrl+C: torque off NOW (arm may drop).")
-            try:
-                self.bus.set_torque(False)
-            except BusError as e:
-                self.get_logger().error(f"torque off failed: {e}")
+            self._torque_off_retry()
         except BusError as e:
             self.get_logger().error(f"shutdown error: {e}")
+            # Never leave the arm powered after we exit: try torque off even if the return failed.
+            self._torque_off_retry()
         finally:
             self.bus.close()
+
+    def _torque_off_retry(self, attempts=3):
+        for _ in range(attempts):
+            try:
+                self.bus.recover()
+                self.bus.set_torque(False)
+                self.get_logger().info("Torque disabled.")
+                return
+            except BusError as e:
+                last = e
+                time.sleep(0.1)
+        self.get_logger().error(f"torque off failed ({last}): the arm may still hold its pose. "
+                                "Hold the arm and unplug the motor power.")
 
     def _ramp_to_start(self):
         if not self.return_on_exit:

@@ -5,6 +5,7 @@ scservo_sdk is installed standalone (no deps) in ~/so101_work/scs_sdk, override 
 """
 import os
 import sys
+import time
 
 _SDK_DIR = os.environ.get("SCS_SDK_PATH", os.path.expanduser("~/so101_work/scs_sdk"))
 if os.path.isdir(_SDK_DIR) and _SDK_DIR not in sys.path:
@@ -42,6 +43,21 @@ class FeetechBus:
 
     def close(self) -> None:
         self._port.closePort()
+
+    def recover(self) -> None:
+        """Make the bus usable again after a transfer was stopped halfway (e.g. Ctrl+C during a read or write).
+
+        scservo_sdk marks the port busy at the start of a transfer and clears the mark at the end.
+        If an exception stops a transfer in the middle, the mark stays, and every later transfer fails
+        with "Port is in use". So the shutdown could neither return the arm nor turn the torque off.
+        """
+        time.sleep(0.02)  # let a half-sent packet finish on the wire
+        self._port.is_using = False
+        try:
+            self._port.clearPort()
+        except Exception:
+            pass
+        self._writer.clearParam()
 
     def read_positions(self) -> dict[int, int]:
         result = self._reader.txRxPacket()
